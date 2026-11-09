@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,7 +20,10 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: jarvis-apk
-          path: app/build/outputs/apk/debug/*.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk jarvis.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest jarvis.apk --title "Jarvis APK" --notes "Latest build" --target "${{ github.sha }}"
