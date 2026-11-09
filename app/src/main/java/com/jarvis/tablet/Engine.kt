@@ -2,6 +2,7 @@ package com.jarvis.tablet
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -141,20 +142,32 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     }
 
     // ------------------------------------------------------------ gemini
+    private fun installedApps(): List<Pair<String, String>> {
+        val pm = ctx.packageManager
+        val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        return pm.queryIntentActivities(i, 0)
+            .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }
+            .distinctBy { it.second }
+    }
+
     private fun systemPrompt(): String {
         val names = Config.contacts().keys().asSequence().joinToString("، ").ifEmpty { "(لا يوجد)" }
-        return """أنت جارفس، مساعد صوتي شخصي. بتستقبل مقطع صوتي قصير من مكالمة، غالبا بالعامية المصرية.
+        val apps = installedApps().map { it.first }.take(200).joinToString("، ")
+        return """أنت جارفس، مساعد صوتي شخصي على الموبايل. بتستقبل مقطع صوتي قصير، غالبا بالعامية المصرية.
 ارجع JSON فقط بالشكل ده:
-{"transcript": "...", "addressed": true/false, "action": "none" | "whatsapp" | "wake_pc", "contact": "...", "message": "...", "reply": "..."}
+{"transcript": "...", "addressed": true/false, "action": "none" | "whatsapp" | "wake_pc" | "open_app" | "web_search" | "create_project", "contact": "...", "message": "...", "app": "...", "query": "...", "project_prompt": "...", "reply": "..."}
 
 القواعد:
 - transcript: اللي اتقال حرفيا. لو صمت أو ضجيج خليه "".
 - addressed: true لو المتحدث نادى "جارفس" أو "جارفيس" أو Jarvis، أو لو in_conversation = true وده استكمال للكلام.
 - لو addressed=false: action="none" و reply="".
-- action="whatsapp": المستخدم طلب يبعت رسالة واتساب. contact لازم يكون واحد من الأسماء دي بالظبط: $names. message نص الرسالة فقط.
-- action="wake_pc": المستخدم طلب تشغيل اللابتوب أو الكمبيوتر.
+- action="whatsapp": رسالة واتساب. contact لازم يكون واحد من الأسماء دي بالظبط: $names. message نص الرسالة فقط.
+- action="wake_pc": تشغيل اللابتوب أو الكمبيوتر.
+- action="open_app": فتح تطبيق. app لازم يكون اسم واحد بالظبط من التطبيقات المثبتة دي: $apps
+- action="web_search": بحث على الإنترنت. query نص البحث.
+- action="create_project": المستخدم عايز يعمل مشروع أو موقع أو تطبيق. project_prompt وصف واضح ومفصل بالإنجليزي للي هيتبني.
 - غير كده action="none" و reply إجابة قصيرة جدا (جملة أو اتنين) بالعامية المصرية، من غير رموز أو تنسيق، لأنها هتتقال بصوت.
-- لو action مش none، reply تأكيد قصير زي "تمام، بعتلها الرسالة"."""
+- لو action مش none، reply تأكيد قصير زي "تمام، فتحت يوتيوب"."""
     }
 
     private fun geminiCall(wav: ByteArray, inConv: Boolean): JSONObject {
@@ -227,6 +240,23 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val ok = doWakePc()
                 if (!ok) reply = "عنوان الجهاز مش متظبط"
             }
+            "open_app" -> {
+                if (!doOpenApp(res.optString("app"))) reply = "مش لاقي التطبيق ده"
+            }
+            "web_search" -> {
+                val q = res.optString("query")
+                val ok = q.isNotBlank() && launch(
+                    Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.google.com/search?q=" + enc(q)))
+                )
+                if (!ok) reply = "معرفتش افتح البحث"
+            }
+            "create_project" -> {
+                val pr = res.optString("project_prompt")
+                val ok = pr.isNotBlank() && launch(
+                    Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://lovable.dev/?autosubmit=true#prompt=" + enc(pr)))
+                )
+                if (!ok) reply = "معرفتش افتح صفحة المشروع"
+            }
         }
 
         if (reply.isNotEmpty()) {
@@ -238,6 +268,25 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     }
 
     // ------------------------------------------------------------ actions
+
+    private fun enc(t: String) = URLEncoder.encode(t, "UTF-8").replace("+", "%20")
+
+    private fun launch(intent: Intent): Boolean {
+        val a11y = JarvisAccessibility.instance
+        if (a11y == null) { Bus.log("Accessibility service مش شغالة"); return false }
+        return a11y.launch(intent)
+    }
+
+    private fun doOpenApp(name: String): Boolean {
+        if (name.isBlank()) return false
+        val apps = installedApps()
+        val hit = apps.firstOrNull { it.first.equals(name, true) }
+            ?: apps.firstOrNull { it.first.contains(name, true) || name.contains(it.first, true) }
+            ?: return false
+        val i = ctx.packageManager.getLaunchIntentForPackage(hit.second) ?: return false
+        Bus.log("OPEN APP -> ${hit.first}")
+        return launch(i)
+    }
     private fun normalizeNumber(raw: String): String {
         var d = raw.filter { it.isDigit() }
         if (d.startsWith("00")) d = d.substring(2)

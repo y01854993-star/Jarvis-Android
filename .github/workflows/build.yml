@@ -19,7 +19,9 @@ jobs:
       - name: Build debug APK
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -27,3 +29,11 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk jarvis.apk
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest jarvis.apk --title "Jarvis APK" --notes "Latest build" --target "${{ github.sha }}"
+      - name: Publish build log
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tail -n 300 build.log > buildlog.txt || echo "no log" > buildlog.txt
+          gh release delete buildlog --yes --cleanup-tag || true
+          gh release create buildlog buildlog.txt --title "Build log" --notes "log" --target "${{ github.sha }}"

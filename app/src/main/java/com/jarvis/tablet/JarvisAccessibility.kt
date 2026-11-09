@@ -33,6 +33,15 @@ class JarvisAccessibility : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    /** Starts any activity (accessibility services are allowed to launch from the background). */
+    fun launch(intent: Intent): Boolean = try {
+        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (e: Exception) {
+        Bus.log("Launch failed: ${e.javaClass.simpleName}")
+        false
+    }
+
     /** Called by Engine. Opens a pre-filled WhatsApp chat; the send button is clicked on the next window event. */
     fun openWhatsApp(url: String): Boolean = try {
         val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
