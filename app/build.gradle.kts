@@ -16,6 +16,14 @@ android {
         // المفتاح بييجي من GitHub Secret وقت البناء
         buildConfigField("String", "GEMINI_KEY", "\"${System.getenv("GEMINI_API_KEY") ?: ""}\"")
     }
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     buildFeatures { buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
