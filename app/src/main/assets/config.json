@@ -1,0 +1,17 @@
+{
+  "model": "gemini-2.5-flash",
+  "always_listen": true,
+  "audio_source": "MIC",
+  "chunk_seconds": 6,
+  "silence_rms": 300,
+  "allowed_caller": "",
+  "botim_package_hints": ["botim", "thebot"],
+  "answer_texts": ["Answer", "Accept", "رد", "الرد", "قبول"],
+  "answer_tap": null,
+  "pc_mac": "AA:BB:CC:DD:EE:FF",
+  "broadcast_ip": "192.168.1.255",
+  "contacts": {
+    "ماما": "01000000000",
+    "احمد": "01111111111"
+  }
+}
