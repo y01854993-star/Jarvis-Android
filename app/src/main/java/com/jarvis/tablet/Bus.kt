@@ -9,7 +9,7 @@ object Bus {
     @Volatile var sink: ((String) -> Unit)? = null
     @Volatile var lastStatus: String? = null
     @Volatile var onText: ((String) -> Unit)? = null
-    @Volatile var onToggle: (() -> Unit)? = null
+    @Volatile var onToggle: ((String) -> Unit)? = null
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     fun emit(obj: JSONObject) {

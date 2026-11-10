@@ -12,6 +12,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import org.json.JSONObject
 
 class MainActivity : Activity() {
     private lateinit var web: WebView
@@ -19,6 +20,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Config.load(this)
+        Keys.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         web = WebView(this)
@@ -27,7 +29,10 @@ class MainActivity : Activity() {
         web.settings.domStorageEnabled = true
         web.addJavascriptInterface(object {
             @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
-            @JavascriptInterface fun toggleListen() { Bus.onToggle?.invoke() }
+            @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
+            @JavascriptInterface fun setKeys(json: String) {
+                try { Keys.save(JSONObject(json)) } catch (_: Exception) {}
+            }
         }, "AndroidBridge")
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
