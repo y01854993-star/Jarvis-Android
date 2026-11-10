@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -24,6 +25,10 @@ class MainActivity : Activity() {
         setContentView(web)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
+        web.addJavascriptInterface(object {
+            @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
+            @JavascriptInterface fun toggleListen() { Bus.onToggle?.invoke() }
+        }, "AndroidBridge")
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
                 val js = assets.open("hud_bridge.js").bufferedReader().readText()

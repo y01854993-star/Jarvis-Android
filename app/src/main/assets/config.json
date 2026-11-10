@@ -1,6 +1,6 @@
 {
   "model": "gemini-2.5-flash",
-  "always_listen": true,
+  "always_listen": false,
   "audio_source": "MIC",
   "chunk_seconds": 6,
   "silence_rms": 300,

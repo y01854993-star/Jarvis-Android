@@ -1,26 +1,19 @@
 (function () {
-  const $ = (...ids) => ids.map(i => document.getElementById(i)).find(Boolean);
-  const waEl = () => $("whatsapp-status", "wa-status", "whatsapp");
-  const callEl = () => $("call-status", "status-text", "state-text");
-  const logEl = () => $("log-screen", "system-logs", "terminal", "logs");
+  const $ = id => document.getElementById(id);
+  const B = window.AndroidBridge;
+
+  // العقل والمايك والتنفيذ بقوا في التطبيق (Gemini)، والصفحة للعرض والكتابة فقط
+  window.handle = function (t) { if (t && B) B.sendText(t); };
+  window.toggle = function () { if (B) B.toggleListen(); };
+  const hud = $("hud"); if (hud) hud.onclick = window.toggle;
+  const setup = $("setupPanel"); if (setup) setup.style.display = "none";
+  const vAi = $("vAi"); if (vAi) vAi.textContent = "GEMINI READY";
+  const rAi = $("rAi"); if (rAi) rAi.className = "row on";
 
   window.jarvisEvent = function (m) {
-    if (m.type === "log") {
-      const box = logEl(); if (!box) return;
-      const d = document.createElement("div"); d.textContent = m.text;
-      box.appendChild(d);
-      while (box.childNodes.length > 200) box.removeChild(box.firstChild);
-      box.scrollTop = box.scrollHeight;
-    }
-    if (m.type === "status") {
-      if (waEl()) waEl().textContent = m.whatsapp;
-      if (callEl()) callEl().textContent = m.call;
-      document.body.classList.toggle("live-call", !!m.live);
-      document.documentElement.style.setProperty("--pulse-speed", m.live ? "0.6s" : "2.4s");
-    }
-    if (m.type === "speaking") {
-      document.body.classList.add("jarvis-speaking");
-      setTimeout(() => document.body.classList.remove("jarvis-speaking"), 2500);
-    }
+    if (m.type === "say" && window.addLog) addLog(m.c, m.t);
+    else if (m.type === "log" && window.addLog) addLog("", m.text);
+    else if (m.type === "state" && window.setState) setState(m.c, m.t);
+    else if (m.type === "status" && vAi) { vAi.textContent = m.call; if (rAi) rAi.className = "row on"; }
   };
 })();

@@ -1,15 +1,311 @@
 <!DOCTYPE html>
-<html lang="ar"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Jarvis</title>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J.A.R.V.I.S</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@500;600&display=swap" rel="stylesheet">
 <style>
-body{margin:0;background:#050b1a;color:#5de0ff;font-family:monospace;padding:16px}
-#call-status{font-size:22px;margin:8px 0}
-#whatsapp-status{opacity:.8}
-#log-screen{margin-top:16px;height:70vh;overflow:auto;font-size:14px;line-height:1.6;border:1px solid #123;padding:8px}
-body.live-call #call-status{color:#4dff88}
-</style></head><body>
-<div id="call-status">AWAITING CALL</div>
-<div id="whatsapp-status">WHATSAPP: --</div>
-<div id="log-screen"></div>
-</body></html>
+:root{--bg:#030a16;--panel:rgba(8,28,58,.55);--line:#12365f;--cy:#22d3ee;--bl:#1e6fe0;--tx:#cfe6ff;--mu:#6f93b8;--ok:#34d399;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:var(--tx);font-family:Rajdhani,sans-serif;font-size:18px;padding-top:env(safe-area-inset-top);padding-bottom:100px;background:repeating-linear-gradient(0deg,rgba(34,211,238,.05) 0 1px,transparent 1px 3px),radial-gradient(ellipse at 50% 30%,#0a2a55 0,#04122a 55%,var(--bg) 100%);background-attachment:fixed;overflow-x:hidden}
+main{max-width:560px;margin:0 auto;padding:14px 22px 30px}
+header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:10px;gap:5px}
+h1{margin:0;font:700 24px Orbitron,sans-serif;letter-spacing:.15em;color:var(--cy);text-shadow:0 0 14px var(--cy);flex-shrink:0}
+#clock{font:500 12px Orbitron,sans-serif;color:var(--cy);white-space:nowrap;margin-left:auto}
+#langBtn{background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 8px;font-size:12px;font-family:Orbitron;cursor:pointer;margin-inline-end:5px;flex-shrink:0}
+#hud{width:100%;display:block;margin:14px 0;cursor:pointer;border-radius:50%;transition:transform .2s}
+#hud:active{transform:scale(0.98)}
+.sp{transform-box:fill-box;transform-origin:center;animation:spin 40s linear infinite}
+.sp2{animation-duration:26s;animation-direction:reverse}.sp3{animation-duration:90s}
+@keyframes spin{to{transform:rotate(360deg)}} @keyframes beat{50%{transform:scale(1.12)}}
+#core{transform-box:fill-box;transform-origin:center}
+body.listening #core{animation:beat 1.8s ease-in-out infinite}
+body.thinking .sp{animation-duration:6s}
+body.speaking #core{animation:beat .5s ease-in-out infinite}
+body.speaking .glow{fill:#34d399}
+#state{text-align:center;font:500 14px Orbitron,sans-serif;letter-spacing:.3em;color:var(--cy);margin-bottom:6px}
+#micNote{text-align:center;font-size:14px;color:var(--mu);margin-bottom:12px;min-height:1.2em}
+.panel{background:var(--panel);border:1px solid var(--line);padding:12px 16px;margin-bottom:14px;clip-path:polygon(0 0,calc(100% - 18px) 0,100% 18px,100% 100%,0 100%)}
+h2{margin:0 0 10px;font:700 16px Orbitron,sans-serif;color:var(--cy);border-bottom:1px dashed rgba(34,211,238,.2);padding-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+#log{height:130px;overflow-y:auto;color:var(--mu);line-height:1.4;font-size:16px}
+#log div{margin-bottom:6px;padding-bottom:6px;border-bottom:1px dashed rgba(255,255,255,.05)}
+#log .j{color:var(--cy)} #log .u{color:var(--tx)} #log .err{color:var(--bad)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:16px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--bad);margin-inline-start:8px}
+.on .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)} .on span:last-child{color:var(--ok)}
+.m{margin:8px 0 4px;display:flex;justify-content:space-between;font-size:14px;color:var(--mu)}
+.m span:last-child{color:var(--tx);font-family:Orbitron,sans-serif;font-size:13px}
+.bar{height:6px;background:#0b2447;border-radius:3px;overflow:hidden;margin-bottom:8px}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--bl),var(--cy));transition:width .5s}
+.bottom-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(3,10,22,.95);backdrop-filter:blur(10px);border-top:1px solid var(--line);padding:12px 16px calc(12px + env(safe-area-inset-bottom));z-index:100;display:flex;gap:8px;max-width:560px;margin:0 auto}
+input,button{font:inherit;color:var(--tx);background:rgba(8,28,58,.8);border:1px solid var(--line);border-radius:24px;outline:none}
+input{flex:1;min-width:0;padding:12px 16px}
+input:focus{border-color:var(--cy)}
+button{cursor:pointer;font-family:Orbitron,sans-serif;font-size:13px;padding:0 20px;min-height:44px;transition:0.2s}
+button:active{transform:scale(.95)}
+#send{background:var(--cy);color:#000;border-color:var(--cy);font-weight:bold}
+.ig{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.ig label{font-size:12px;color:var(--mu)}
+.ig input{border-radius:8px;padding:10px;font-size:14px;background:#06101f}
+#saveBtn{background:var(--ok);color:#000;border:none;border-radius:8px;width:100%;padding:12px;font-weight:bold;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div style="display:flex;align-items:center">
+    <button id="langBtn" onclick="toggleLang()">AR</button>
+    <h1>J.A.R.V.I.S</h1>
+  </div>
+  <div id="clock">--:--:--</div>
+</header>
+
+<svg id="hud" viewBox="0 0 400 400">
+<defs><radialGradient id="g"><stop offset="0" stop-color="#fff"/><stop offset=".35" stop-color="#22d3ee"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient></defs>
+<g fill="none" stroke-linecap="round">
+<g class="sp sp3" stroke="#22d3ee" stroke-opacity=".5"><g id="t1"></g></g>
+<g class="sp" stroke="#1e6fe0" stroke-width="6"><circle cx="200" cy="200" r="172" stroke-dasharray="190 70 120 110 210 90 150 80 260 120"/></g>
+<g class="sp sp2" stroke="#22d3ee" stroke-width="1.5"><circle cx="200" cy="200" r="148" stroke-dasharray="70 8 14 8 30 8"/></g>
+<g class="sp sp3" stroke="#22d3ee" stroke-width="3"><g id="t2"></g></g>
+<circle cx="200" cy="200" r="100" stroke="#22d3ee" stroke-opacity=".45"/>
+<circle cx="200" cy="200" r="78" stroke="#22d3ee" stroke-opacity=".3"/>
+<g class="sp sp2" stroke="#22d3ee" stroke-opacity=".7"><line x1="200" y1="200" x2="115" y2="148"/><g id="dots" fill="#22d3ee" stroke="none"></g></g>
+<circle class="glow" cx="200" cy="200" r="46" fill="url(#g)" stroke="none"/>
+<polygon id="core" points="200,172 224,186 224,214 200,228 176,214 176,186" stroke="#7ff0ff" stroke-width="1.5" fill="rgba(34,211,238,.25)"/>
+</g></svg>
+
+<div id="state">TAP JARVIS TO SPEAK</div>
+<div id="micNote" aria-live="polite"></div>
+
+<div class="panel" id="setupPanel">
+  <h2>AI CONFIGURATION</h2>
+  <div class="ig"><label>اسمك</label><input type="text" id="kName" placeholder="مثلاً: يا توني"></div>
+  <div class="ig"><label>OpenAI (GPT) Key</label><input type="password" id="kGpt" placeholder="sk-..."></div>
+  <div class="ig"><label>Groq Key (مجاني)</label><input type="password" id="kGroq" placeholder="gsk_..."></div>
+  <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
+</div>
+
+<div class="panel">
+<h2>COMMAND LOG</h2>
+<div id="log" dir="auto" aria-live="polite"></div>
+<div class="row" id="rAi" style="border:none"><span>AI ENGINE</span><span><b id="vAi">checking</b><i class="dot"></i></span></div>
+</div>
+
+<div class="panel">
+<h2>SYSTEM</h2>
+<div id="sysContainer"></div>
+</div>
+</main>
+
+<div class="bottom-bar">
+  <input id="txt" placeholder="Type here..." aria-label="رسالة">
+  <button id="send" type="button">SEND</button>
+</div>
+
+<script>
+const $=id=>document.getElementById(id), NS="http://www.w3.org/2000/svg";
+let keys={ gpt:localStorage.getItem("k_gpt")||"", groq:localStorage.getItem("k_groq")||"" };
+let userName=localStorage.getItem("jv_name")||"يا فندم";
+let listening=false,busy=false,voices=[], currentLang="ar-EG";
+
+// 1. Build UI & Stats
+(function(){
+  const mk=(p,a,b,c,d)=>{const l=document.createElementNS(NS,"line");l.setAttribute("x1",a);l.setAttribute("y1",b);l.setAttribute("x2",c);l.setAttribute("y2",d);p.appendChild(l)};
+  for(let i=0;i<120;i++){const a=i*Math.PI/60,co=Math.cos(a),s=Math.sin(a);mk($("t1"),200+192*co,200+192*s,200+(i%5?196:200)*co,200+(i%5?196:200)*s)}
+  for(let i=0;i<72;i++){const a=i*Math.PI/36,co=Math.cos(a),s=Math.sin(a);mk($("t2"),200+112*co,200+112*s,200+(i%2?118:124)*co,200+(i%2?118:124)*s)}
+  ["fps","mem","net","bat"].forEach(id=>$("sysContainer").innerHTML+=`<div class="m"><span>${id.toUpperCase()}</span><span id="v_${id}">--</span></div><div class="bar"><i id="b_${id}"></i></div>`);
+})();
+
+// 2. Clock & Stats Loop
+setInterval(()=>{$("clock").textContent=new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true})},1000);
+let frames=0; requestAnimationFrame(function loop(){frames++;requestAnimationFrame(loop)});
+setInterval(()=>{
+  $("v_fps").textContent=frames+" fps"; $("b_fps").style.width=Math.min(100,frames/1.2)+"%"; frames=0;
+  if(performance.memory){$("v_mem").textContent=Math.round(performance.memory.usedJSHeapSize/1048576)+" MB";$("b_mem").style.width=(performance.memory.usedJSHeapSize/performance.memory.jsHeapSizeLimit*100)+"%"}
+  if(navigator.connection){$("v_net").textContent=navigator.connection.downlink+" Mbps";$("b_net").style.width=Math.min(100,navigator.connection.downlink*2)+"%"}
+},1000);
+if(navigator.getBattery)navigator.getBattery().then(b=>{const u=()=>{$("v_bat").textContent=Math.round(b.level*100)+"%";$("b_bat").style.width=(b.level*100)+"%";};u();b.onlevelchange=u});
+
+// 3. Language Toggle
+function toggleLang(){
+  currentLang = (currentLang === "ar-EG") ? "en-US" : "ar-EG";
+  $("langBtn").textContent = (currentLang === "ar-EG") ? "AR" : "EN";
+  $("micNote").textContent = currentLang === "ar-EG" ? "اللغة: عربي" : "Language: English";
+  if(listening){ stopRec(); }
+}
+$("langBtn").textContent = "AR";
+
+// 4. Human-like Voice Logic
+if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=()=>voices=speechSynthesis.getVoices(); }
+function speak(text){
+  if(!("speechSynthesis" in window))return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  const isArabic = /[\u0600-\u06FF]/.test(text);
+  
+  let preferred = isArabic 
+    ? ['Majed', 'Maged', 'Naayf', 'Shakir', 'Google العربية']
+    : ['Daniel', 'Arthur', 'George', 'Google UK English Male'];
+    
+  let bestVoice = null;
+  for(let name of preferred) {
+    bestVoice = voices.find(v => v.name.includes(name));
+    if(bestVoice) break;
+  }
+  if(!bestVoice) bestVoice = voices.find(v => v.lang.startsWith(isArabic ? "ar" : "en"));
+
+  if(bestVoice) u.voice = bestVoice;
+  u.pitch = 0.9;
+  u.rate = 1.0;
+  speechSynthesis.speak(u);
+}
+
+// 5. UI Helpers
+function setState(c,t){document.body.className=c;$("state").textContent=t}
+function addLog(c,t){$("log").innerHTML+=`<div class="${c}">› ${t}</div>`;$("log").scrollTop=$("log").scrollHeight}
+
+// 6. API Logic & Personality
+function saveKeys(){
+  keys.gpt=$("kGpt").value.trim(); 
+  keys.groq=$("kGroq").value.trim();
+  userName=$("kName").value.trim() || "يا فندم";
+  localStorage.setItem("k_gpt",keys.gpt); localStorage.setItem("k_groq",keys.groq); localStorage.setItem("jv_name",userName);
+  checkKeys(); addLog("j",`Keys Saved. Hello ${userName}.`);
+}
+function checkKeys(){
+  const c=Object.values(keys).filter(k=>k).length;
+  $("setupPanel").style.display=c?"none":"block";
+  $("vAi").textContent=c?`${c} Models Ready`:"Missing";
+  $("rAi").className=c?"row on":"row";
+}
+$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kName").value=userName; checkKeys();
+
+function getSystemPrompt() {
+  return `أنت J.A.R.V.I.S. مساعد شخصي ذكي جداً. المستخدم هو "${userName}". بتناديه دايماً "${userName}" أو "يا فندم".
+شخصيتك: رسمي، خفيف الدم، واثق. رد بنفس لغة المستخدم.
+افهم الحروف الغلط. لو طلب فتح تطبيق، حدد اسمه بالإنجليزي في "app_name".
+ترد بـ JSON فقط:
+{"reply":"الرد القصير","action":"open_app|search_youtube|whatsapp|call|none","app_name":"...","query":"...","contact":"...","message":"..."}`;
+}
+
+async function fetchAI(provider, prompt){
+  if(!keys[provider]) throw new Error("Missing key");
+  let url, headers, body;
+  const sys = getSystemPrompt();
+  
+  if(provider === "gpt"){
+    url = "https://api.openai.com/v1/chat/completions";
+    headers = {"Authorization":`Bearer ${keys.gpt}`,"Content-Type":"application/json"};
+    body = {model:"gpt-4o",response_format:{type:"json_object"},messages:[{role:"system",content:sys},{role:"user",content:prompt}]};
+  } 
+  else if(provider === "groq"){
+    url = "https://api.groq.com/openai/v1/chat/completions";
+    headers = {"Authorization":`Bearer ${keys.groq}`,"Content-Type":"application/json"};
+    body = {model:"llama-3.3-70b-versatile",response_format:{type:"json_object"},messages:[{role:"system",content:sys},{role:"user",content:prompt}]};
+  }
+  const res = await fetch(url, {method:"POST",headers,body:JSON.stringify(body)});
+  const data = await res.json();
+  if(!res.ok) throw new Error(provider + " Error");
+  return {text:data.choices[0].message.content, source:provider.toUpperCase()};
+}
+
+async function askAI(prompt){
+  const available = [];
+  if(keys.gpt) available.push(fetchAI("gpt",prompt).catch(e => { addLog("err", "GPT: "+e.message); return null; }));
+  if(keys.groq) available.push(fetchAI("groq",prompt).catch(e => { addLog("err", "Groq: "+e.message); return null; }));
+  const results = (await Promise.all(available)).filter(r => r !== null);
+  if(!results.length) throw new Error("كل الموديلات فشلت.");
+  if(results.length === 1) return parseRes(results[0]);
+  
+  let combined=""; results.forEach(r=>combined+=`\n[${r.source}]: ${r.text}`);
+  let judge = keys.gpt ? "gpt" : "groq";
+  try{
+    const final=await fetchAI(judge,`سؤال: ${prompt}\nإجابات:${combined}\nادمجهم في JSON.`,`أنت JARVIS. دمج في {"reply":"...","action":"...","app_name":"...","query":"...","contact":"...","message":"..."}`);
+    let p=parseRes(final); p.source="Ensemble"; return p;
+  }catch(e){ return parseRes(results[0]); }
+}
+
+function parseRes(r){
+  let t=r.text.replace(/^```(?:json)?/i,"").replace(/```$/,"").trim(), p={reply:t,action:"none"};
+  try{p=JSON.parse(t)}catch(e){}
+  p.source=r.source; return p;
+}
+
+// 7. App Executor
+function executeAction(r){
+  const app=r.app_name ? r.app_name.toLowerCase().trim() : "";
+  const query=encodeURIComponent(r.query||"");
+  const msg=encodeURIComponent(r.message||"");
+  
+  if(r.action==="search_youtube"){
+    addLog("j",`⚡ بحث يوتيوب: ${r.query}`);
+    window.location.href = `vnd.youtube://results?search_query=${query}`;
+  }
+  else if(r.action==="whatsapp"){
+    addLog("j",`💬 واتساب: ${r.contact || ""}`);
+    window.location.href = `whatsapp://send?text=${msg}`; 
+  }
+  else if(r.action==="call"){
+    addLog("j",`📞 اتصال: ${r.contact}`);
+    window.location.href = `tel:`;
+  }
+  else if(r.action==="open_app"){
+    const links={
+      "youtube":"vnd.youtube://", "whatsapp":"whatsapp://", "facebook":"fb://", 
+      "instagram":"instagram://app", "twitter":"twitter://", "telegram":"tg://", 
+      "spotify":"spotify://", "netflix":"nflx://", "tiktok":"snssdk1128://", 
+      "maps":"geo:0,0?q=", "camera":"intent://#Intent;action=android.media.action.IMAGE_CAPTURE;end", 
+      "phone":"tel:", "messages":"sms:", "settings":"intent://#Intent;action=android.settings.SETTINGS;end", 
+      "chrome":"googlechrome://", "calculator":"intent://#Intent;action=android.intent.action.CALCULATOR;end"
+    };
+    if(links[app]){ addLog("j",`⚡ فتح ${app}`); window.location.href=links[app]; }
+  }
+}
+
+// 8. Main Loop
+async function handle(t){
+  if(!t||busy)return; busy=true; setState("thinking","THINKING"); addLog("u",t);
+  try{
+    const r=await askAI(t);
+    if(r.reply){ addLog("j",`[${r.source}] ${r.reply}`); setState("speaking","SPEAKING"); await new Promise(res=>{speak(r.reply);setTimeout(res,2500)}); }
+    executeAction(r);
+  }catch(e){ addLog("err","Error: "+e.message); }
+  busy=false; setState("","TAP JARVIS TO SPEAK");
+}
+
+// 9. Single-Shot Mic Logic
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition; let rec=null;
+function startRec(){
+  if(!SR||busy)return;
+  try{
+    rec=new SR(); rec.lang=currentLang; rec.interimResults=false; rec.maxAlternatives=1;
+    rec.onstart=()=>{$("micNote").textContent="🎤 يستمع...";$("micNote").className="ok"};
+    rec.onresult=e=>{
+      const text = e.results[0][0].transcript;
+      $("txt").value = text;
+      stopRec(); 
+      handle(text); 
+    };
+    rec.onerror=e=>{ addLog("err","Mic Error: "+e.error); stopRec(); };
+    rec.onend=()=>{ stopRec(); };
+    rec.start();
+  }catch(e){ stopRec(); }
+}
+function stopRec(){
+  if(rec){ try{rec.abort()}catch(e){} rec=null; }
+  listening=false;
+  if(!busy) setState("","TAP JARVIS TO SPEAK");
+}
+function toggle(){
+  if(!keys.gpt && !keys.groq)return alert("حط مفتاح واحد على الأقل");
+  if(listening){ stopRec(); }
+  else { listening=true; setState("listening","LISTENING"); startRec(); }
+}
+$("hud").onclick=toggle; 
+$("send").onclick=()=>{const v=$("txt").value;$("txt").value="";handle(v)};
+$("txt").onkeydown=e=>{if(e.key==="Enter")$("send").click()};
+addLog("j","JARVIS online. Systems ready.");
+</script>
+</body>
+</html>

@@ -42,6 +42,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private var ttsReady = false
     private var callActive = false
     private var lastInteraction = 0L
+    @Volatile private var ptt = false
     private val history = ArrayDeque<Pair<String, String>>()
 
     fun start() {
@@ -53,6 +54,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         }
         if (Config.apiKey.isBlank()) Bus.log("GEMINI_API_KEY فاضي - ضيفه كـ GitHub Secret وابني تاني")
         pushStatus()
+        Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(null, t) } }
+        Bus.onToggle = { ptt = true }
         Bus.log("Jarvis engine online")
         scope.launch(Dispatchers.Default) { loop() }
     }
@@ -83,13 +86,27 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 }
             }
 
-            if (!(callActive || Config.alwaysListen())) { delay(1000); continue }
+            if (!(callActive || Config.alwaysListen() || ptt)) { delay(300); continue }
 
+            val forced = ptt
+            if (forced) Bus.state("listening", "LISTENING")
             val pcm = recordChunk()
-            if (pcm == null) { delay(1000); continue }
+            if (pcm == null) {
+                ptt = false
+                Bus.state("", "TAP JARVIS TO SPEAK")
+                delay(1000); continue
+            }
             val level = rms(pcm)
-            if (level < Config.silenceRms()) continue
-            handle(toWav(pcm))
+            if (level < Config.silenceRms()) {
+                if (forced) {
+                    ptt = false
+                    Bus.say("err", "ما سمعتش حاجة")
+                    Bus.state("", "TAP JARVIS TO SPEAK")
+                }
+                continue
+            }
+            ptt = false
+            handle(toWav(pcm), null, forced)
         }
     }
 
@@ -170,19 +187,21 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 - لو action مش none، reply تأكيد قصير زي "تمام، فتحت يوتيوب"."""
     }
 
-    private fun geminiCall(wav: ByteArray, inConv: Boolean): JSONObject {
+    private fun geminiCall(wav: ByteArray?, typed: String?, inConv: Boolean): JSONObject {
         val hist = history.takeLast(4).joinToString("\n") { "المستخدم: ${it.first}\nجارفس: ${it.second}" }
         val prompt = "in_conversation = $inConv\nآخر الحوار:\n${hist.ifEmpty { "(لا يوجد)" }}"
 
-        val parts = JSONArray()
-            .put(JSONObject().put("text", prompt))
-            .put(
+        val parts = JSONArray().put(JSONObject().put("text", prompt))
+        if (wav != null) {
+            parts.put(
                 JSONObject().put(
                     "inlineData",
                     JSONObject().put("mimeType", "audio/wav")
                         .put("data", Base64.encodeToString(wav, Base64.NO_WRAP))
                 )
             )
+        }
+        if (typed != null) parts.put(JSONObject().put("text", "المستخدم كتب مباشرة (addressed=true): $typed"))
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt()))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
@@ -208,10 +227,19 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         }
     }
 
-    private suspend fun handle(wav: ByteArray) {
-        val inConv = System.currentTimeMillis() - lastInteraction < 20_000
+    private suspend fun handle(wav: ByteArray?, typed: String?, forced: Boolean = false) {
+        if (typed != null || forced) Bus.state("thinking", "THINKING")
+        try {
+            handleInner(wav, typed, forced)
+        } finally {
+            Bus.state("", "TAP JARVIS TO SPEAK")
+        }
+    }
+
+    private suspend fun handleInner(wav: ByteArray?, typed: String?, forced: Boolean) {
+        val inConv = typed != null || forced || System.currentTimeMillis() - lastInteraction < 20_000
         val res = try {
-            withContext(Dispatchers.IO) { geminiCall(wav, inConv) }
+            withContext(Dispatchers.IO) { geminiCall(wav, typed, inConv) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: HttpException) {
@@ -223,10 +251,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             return
         }
 
-        val transcript = res.optString("transcript").trim()
+        val transcript = (typed ?: res.optString("transcript")).trim()
         if (transcript.isEmpty()) return
-        Bus.log("HEARD: $transcript")
-        if (!res.optBoolean("addressed")) return
+        if (typed == null && !forced && !res.optBoolean("addressed")) return
+        Bus.say("u", transcript)
 
         lastInteraction = System.currentTimeMillis()
         var reply = res.optString("reply").trim()
@@ -328,7 +356,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     // ------------------------------------------------------------ tts
     private suspend fun speak(text: String) {
         Bus.emit(JSONObject().put("type", "speaking").put("text", text))
-        Bus.log("JARVIS: $text")
+        Bus.say("j", text)
+        Bus.state("speaking", "SPEAKING")
         val engine = tts
         if (!ttsReady || engine == null) return
 
