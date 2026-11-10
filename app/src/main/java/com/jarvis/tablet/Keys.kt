@@ -2,6 +2,7 @@ package com.jarvis.tablet
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
 import org.json.JSONObject
 
 object Keys {
@@ -26,4 +27,18 @@ object Keys {
             .putString("name", json.optString("name").trim())
             .apply()
     }
+
+    fun memory(): List<String> = try {
+        val a = JSONArray(sp.getString("memory", "[]"))
+        (0 until a.length()).map { a.getString(it) }
+    } catch (_: Exception) { emptyList() }
+
+    fun addMemory(fact: String) {
+        val l = memory().toMutableList()
+        l.add(fact.trim())
+        while (l.size > 40) l.removeAt(0)
+        sp.edit().putString("memory", JSONArray(l).toString()).apply()
+    }
+
+    fun clearMemory() { sp.edit().remove("memory").apply() }
 }

@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.net.Uri
+import android.provider.AlarmClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
@@ -14,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -29,6 +31,8 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.sqrt
@@ -48,18 +52,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private val history = ArrayDeque<Pair<String, String>>()
     @Volatile private var busy = false
     @Volatile private var listeningNow = false
-    private lateinit var stt: Stt
+    private var listenJob: Job? = null
 
     fun start() {
         Keys.init(ctx)
         tts = TextToSpeech(ctx) { status ->
             if (status == TextToSpeech.SUCCESS) ttsReady = true
         }
-        stt = Stt(
-            ctx,
-            { text -> listeningNow = false; scope.launch(Dispatchers.Default) { handle(text) } },
-            { msg -> listeningNow = false; Bus.say("err", msg); Bus.state("", IDLE) }
-        )
         Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
         Bus.onToggle = { lang -> toggleListen(lang) }
         pushStatus()
@@ -81,7 +80,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private fun toggleListen(lang: String) {
         if (busy) { Bus.say("err", "استنى لحظة"); return }
         if (listeningNow) {
-            stt.cancel()
+            listenJob?.cancel()
             listeningNow = false
             Bus.state("", IDLE)
             return
@@ -90,7 +89,30 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         tts?.stop()
         listeningNow = true
         Bus.state("listening", "LISTENING")
-        stt.start(lang)
+        listenJob = scope.launch(Dispatchers.Default) {
+            try {
+                val pcm = recordUtterance()
+                if (pcm == null) { Bus.say("err", "ما سمعتش حاجة، جرّب تاني"); return@launch }
+                Bus.state("thinking", "THINKING")
+                val text = try {
+                    withContext(Dispatchers.IO) { transcribe(toWav(pcm), lang) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: NoKeyException) {
+                    Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); return@launch
+                } catch (e: HttpException) {
+                    Bus.say("err", httpMessage(e)); return@launch
+                } catch (e: Exception) {
+                    Bus.say("err", "مشكلة في الاتصال بالنت (${e.javaClass.simpleName})"); return@launch
+                }
+                if (text.isBlank()) { Bus.say("err", "ما فهمتش الكلام، جرّب تاني"); return@launch }
+                listeningNow = false
+                handle(text)
+            } finally {
+                listeningNow = false
+                if (!busy) Bus.state("", IDLE)
+            }
+        }
     }
 
     // ------------------------------------------------------------ text brain
@@ -127,23 +149,14 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     private suspend fun act(res: JSONObject, userText: String) {
         var reply = res.optString("reply").trim()
-        when (res.optString("action", "none")) {
-            "whatsapp" -> if (!doWhatsapp(res.optString("contact"), res.optString("message")))
-                reply = "مش قادر ابعت الرسالة، اتأكد من الاسم"
-            "wake_pc" -> if (!doWakePc()) reply = "عنوان الجهاز مش متظبط"
-            "open_app" -> if (!doOpenApp(res.optString("app"))) reply = "مش لاقي التطبيق ده"
-            "web_search" -> {
-                val q = res.optString("query")
-                val ok = q.isNotBlank() &&
-                    launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + enc(q))))
-                if (!ok) reply = "معرفتش افتح البحث"
-            }
-            "create_project" -> {
-                val pr = res.optString("project_prompt")
-                val ok = pr.isNotBlank() &&
-                    launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://lovable.dev/?autosubmit=true#prompt=" + enc(pr))))
-                if (!ok) reply = "معرفتش افتح صفحة المشروع"
-            }
+        val acts = ArrayList<JSONObject>()
+        res.optJSONArray("actions")?.let { arr ->
+            for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { acts.add(it) }
+        }
+        for ((i, a) in acts.withIndex()) {
+            val err = runAction(a)
+            if (err != null) { reply = err; break }
+            if (i < acts.size - 1) delay(1500)
         }
         if (reply.isNotEmpty()) {
             history.addLast(userText to reply)
@@ -151,6 +164,51 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             speak(reply)
         }
         lastInteraction = System.currentTimeMillis()
+    }
+
+    private fun view(url: String, fail: String): String? =
+        if (launch(Intent(Intent.ACTION_VIEW, Uri.parse(url)))) null else fail
+
+    private suspend fun runAction(a: JSONObject): String? = when (a.optString("type")) {
+        "whatsapp" -> if (doWhatsapp(a.optString("contact"), a.optString("message"))) null
+            else "مش قادر ابعت الرسالة، اتأكد من الاسم"
+        "wake_pc" -> if (doWakePc()) null else "عنوان الجهاز مش متظبط"
+        "open_app" -> if (doOpenApp(a.optString("app"))) null else "مش لاقي التطبيق ده"
+        "web_search" -> a.optString("query").takeIf { it.isNotBlank() }
+            ?.let { view("https://www.google.com/search?q=" + enc(it), "معرفتش افتح البحث") }
+            ?: "مفيش حاجة أبحث عنها"
+        "youtube_search" -> a.optString("query").takeIf { it.isNotBlank() }
+            ?.let { view("https://www.youtube.com/results?search_query=" + enc(it), "معرفتش افتح يوتيوب") }
+            ?: "مفيش حاجة أبحث عنها"
+        "navigate" -> a.optString("place").takeIf { it.isNotBlank() }
+            ?.let { view("geo:0,0?q=" + enc(it), "معرفتش افتح الخريطة") }
+            ?: "مفيش مكان أروحله"
+        "call" -> {
+            val n = Config.contacts().optString(a.optString("contact"), "")
+            if (n.isEmpty()) "مش لاقي الاسم ده في جهات الاتصال"
+            else view("tel:" + normalizeNumber(n).let { "+$it" }, "معرفتش افتح الاتصال")
+        }
+        "alarm" -> {
+            val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                .putExtra(AlarmClock.EXTRA_HOUR, a.optInt("hour"))
+                .putExtra(AlarmClock.EXTRA_MINUTES, a.optInt("minute"))
+                .putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("label", "Jarvis"))
+                .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+            if (launch(i)) null else "معرفتش اظبط المنبه"
+        }
+        "timer" -> {
+            val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                .putExtra(AlarmClock.EXTRA_LENGTH, a.optInt("seconds"))
+                .putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("label", "Jarvis"))
+                .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+            if (launch(i)) null else "معرفتش اظبط المؤقت"
+        }
+        "create_project" -> a.optString("project_prompt").takeIf { it.isNotBlank() }
+            ?.let { view("https://lovable.dev/?autosubmit=true#prompt=" + enc(it), "معرفتش افتح صفحة المشروع") }
+            ?: "مفيش وصف للمشروع"
+        "remember" -> { a.optString("fact").takeIf { it.isNotBlank() }?.let { Keys.addMemory(it) }; null }
+        "forget_memory" -> { Keys.clearMemory(); null }
+        else -> null
     }
 
     // ------------------------------------------------------------ prompts
@@ -165,25 +223,39 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private fun systemPrompt(audioMode: Boolean): String {
         val names = Config.contacts().keys().asSequence().joinToString("، ").ifEmpty { "(لا يوجد)" }
         val apps = installedApps().map { it.first }.take(200).joinToString("، ")
+        val now = SimpleDateFormat("EEEE d MMMM yyyy, HH:mm", Locale.ENGLISH).format(Date())
+        val mem = Keys.memory()
+        val memBlock = if (mem.isEmpty()) "" else "حاجات تعرفها عن المستخدم:\n" + mem.joinToString("\n") { "- $it" }
         val extraKeys = if (audioMode) "\"transcript\": \"...\", \"addressed\": true/false, " else ""
         val extraRules = if (audioMode) """
 - transcript: اللي اتقال حرفيا. لو صمت أو ضجيج خليه "".
 - addressed: true لو المتحدث نادى "جارفس" أو "جارفيس" أو Jarvis، أو لو in_conversation = true.
-- لو addressed=false: action="none" و reply="".""" else ""
-        return """أنت J.A.R.V.I.S مساعد شخصي ذكي على موبايل المستخدم. اسمه "${Keys.name}" وبتناديه بيه.
-شخصيتك: رسمي، خفيف الدم، واثق. رد بنفس لغة المستخدم، وغالبا بالعامية المصرية.
-افهم الحروف الغلط في الكلام المسموع.
+- لو addressed=false: actions فاضية و reply="".""" else ""
+        return """أنت J.A.R.V.I.S مساعد شخصي ذكي جدا على موبايل المستخدم. اسمه "${Keys.name}" وبتناديه بيه.
+الوقت والتاريخ دلوقتي: $now.
+$memBlock
+شخصيتك: رسمي، خفيف الدم، واثق. رد بنفس لغة المستخدم (غالبا عامية مصرية). افهم الحروف الغلط في الكلام المسموع.
 ارجع JSON فقط بالشكل ده:
-{$extraKeys"action": "none" | "whatsapp" | "wake_pc" | "open_app" | "web_search" | "create_project", "contact": "...", "message": "...", "app": "...", "query": "...", "project_prompt": "...", "reply": "..."}
+{$extraKeys"reply": "...", "actions": []}
+actions قائمة (ممكن تبقى فاضية أو فيها أكتر من خطوة بالترتيب). كل عنصر فيه "type" وحقوله:
+- {"type":"open_app","app":"..."}: app اسم واحد بالظبط من التطبيقات المثبتة دي: $apps
+- {"type":"web_search","query":"..."}
+- {"type":"youtube_search","query":"..."}
+- {"type":"navigate","place":"..."}
+- {"type":"whatsapp","contact":"...","message":"..."}: contact واحد بالظبط من: $names
+- {"type":"call","contact":"..."}: نفس الأسماء
+- {"type":"alarm","hour":0-23,"minute":0-59,"label":"..."}
+- {"type":"timer","seconds":رقم,"label":"..."}
+- {"type":"create_project","project_prompt":"وصف مفصل بالإنجليزي للي هيتبني"}
+- {"type":"wake_pc"}
+- {"type":"remember","fact":"..."}: لو المستخدم قالك تفتكر حاجة عنه.
+- {"type":"forget_memory"}
 
 القواعد:$extraRules
-- action="whatsapp": رسالة واتساب. contact لازم يكون واحد من الأسماء دي بالظبط: $names. message نص الرسالة فقط.
-- action="wake_pc": تشغيل اللابتوب أو الكمبيوتر.
-- action="open_app": فتح تطبيق. app لازم يكون اسم واحد بالظبط من التطبيقات المثبتة دي: $apps
-- action="web_search": بحث على الإنترنت. query نص البحث.
-- action="create_project": المستخدم عايز يعمل مشروع أو موقع أو تطبيق. project_prompt وصف واضح ومفصل بالإنجليزي للي هيتبني.
-- غير كده action="none" و reply إجابة قصيرة جدا (جملة أو اتنين) من غير رموز أو تنسيق، لأنها هتتقال بصوت.
-- لو action مش none، reply تأكيد قصير زي "تمام، فتحت يوتيوب"."""
+- reply: جملة أو اتنين أو تلاتة كحد أقصى، من غير رموز أو تنسيق لأنها هتتقال بصوت. لو في actions خلي reply تأكيد قصير زي "تمام، فتحت يوتيوب".
+- لو سؤال معرفة: جاوب بدقة ومباشرة. لو مش متأكد قول إنك مش متأكد وماتألفش. لو محتاج معلومة حديثة (أخبار، أسعار، طقس، نتايج) اعمل web_search وقول إنك فتحت البحث.
+- لو الطلب مش واضح اسأل سؤال واحد قصير في reply وخلي actions فاضية.
+- ماتبعتش رسالة ولا تتصل إلا لو المستخدم طلب ده صراحة."""
     }
 
     // ------------------------------------------------------------ LLM calls
@@ -280,6 +352,134 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         val out = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
         return parseLoose(out)
+    }
+
+    // ------------------------------------------------------------ speech to text (Whisper)
+    @SuppressLint("MissingPermission")
+    private suspend fun recordUtterance(): ShortArray? = withContext(Dispatchers.IO) {
+        val rate = 16000
+        val frame = 1600   // 100ms
+        val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBuf <= 0) return@withContext null
+        val rec = try {
+            AudioRecord(Config.audioSource(), rate, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, frame * 2) * 2)
+        } catch (e: Exception) {
+            return@withContext null
+        }
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return@withContext null }
+
+        val out = ArrayList<ShortArray>()
+        var started = false
+        var silent = 0
+        var frames = 0
+        var noise = 0.0
+        var threshold = Config.silenceRms()
+        try {
+            rec.startRecording()
+            val buf = ShortArray(frame)
+            while (frames < 150 && isActive) {          // max 15s
+                var got = 0
+                while (got < frame) {
+                    val n = rec.read(buf, got, frame - got)
+                    if (n <= 0) break
+                    got += n
+                }
+                if (got < frame) break
+                frames++
+                out.add(buf.copyOf())
+                val level = rms(buf)
+                if (frames <= 3) {                       // measure room noise
+                    noise = maxOf(noise, level)
+                    if (frames == 3) threshold = maxOf(Config.silenceRms(), noise * 2.5)
+                    continue
+                }
+                if (level > threshold) { started = true; silent = 0 }
+                else if (started) { silent++; if (silent >= 13) break }   // 1.3s of silence = done
+                else if (frames > 70) break                                // nobody spoke for 7s
+            }
+        } finally {
+            try { rec.stop() } catch (_: Exception) {}
+            rec.release()
+        }
+        if (!started) return@withContext null
+        val total = out.sumOf { it.size }
+        val res = ShortArray(total)
+        var o = 0
+        for (f in out) { System.arraycopy(f, 0, res, o, f.size); o += f.size }
+        res
+    }
+
+    private fun transcribe(wav: ByteArray, lang: String): String {
+        val code = if (lang.startsWith("en")) "en" else "ar"
+        return when {
+            Keys.groq.isNotBlank() -> whisper(
+                "https://api.groq.com/openai/v1/audio/transcriptions", Keys.groq,
+                listOf("whisper-large-v3-turbo", "whisper-large-v3"), wav, code
+            )
+            Keys.openai.isNotBlank() -> whisper(
+                "https://api.openai.com/v1/audio/transcriptions", Keys.openai,
+                listOf("gpt-4o-mini-transcribe", "whisper-1"), wav, code
+            )
+            Keys.gemini.isNotBlank() -> geminiTranscribe(wav)
+            else -> throw NoKeyException()
+        }
+    }
+
+    private fun whisper(url: String, key: String, models: List<String>, wav: ByteArray, lang: String): String {
+        var last: HttpException? = null
+        for (m in models) {
+            try {
+                val boundary = "----jarvis" + System.currentTimeMillis()
+                val conn = URL(url).openConnection() as HttpURLConnection
+                try {
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 40000
+                    conn.setRequestProperty("Authorization", "Bearer $key")
+                    conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                    conn.outputStream.use { os ->
+                        fun field(name: String, value: String) {
+                            os.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
+                        }
+                        field("model", m)
+                        field("language", lang)
+                        field("response_format", "json")
+                        field("temperature", "0")
+                        os.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\n".toByteArray())
+                        os.write(wav)
+                        os.write("\r\n--$boundary--\r\n".toByteArray())
+                    }
+                    val code = conn.responseCode
+                    if (code != 200) {
+                        val err = try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (_: Exception) { "" }
+                        throw HttpException(code, err)
+                    }
+                    return JSONObject(conn.inputStream.bufferedReader().readText()).optString("text").trim()
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: HttpException) {
+                last = e
+                if (e.code != 400 && e.code != 404) throw e
+            }
+        }
+        throw last ?: Exception("no model")
+    }
+
+    private fun geminiTranscribe(wav: ByteArray): String {
+        val parts = JSONArray()
+            .put(JSONObject().put("text", "اكتب الكلام المسموع في المقطع حرفيا فقط، من غير أي إضافة. لو مفيش كلام اكتب فاضي."))
+            .put(JSONObject().put("inlineData", JSONObject().put("mimeType", "audio/wav")
+                .put("data", Base64.encodeToString(wav, Base64.NO_WRAP))))
+        val body = JSONObject().put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+        val txt = postJson(
+            "https://generativelanguage.googleapis.com/v1beta/models/${Config.model()}:generateContent",
+            mapOf("x-goog-api-key" to Keys.gemini), body
+        )
+        return JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
+            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text").trim()
     }
 
     // ------------------------------------------------------------ call mode (optional, needs Gemini key)
