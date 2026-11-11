@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -12,7 +14,12 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.provider.AlarmClock
+import android.provider.CalendarContract
+import android.provider.Settings
+import android.telephony.SmsManager
+import android.view.KeyEvent
 import android.provider.ContactsContract
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -65,6 +72,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var track: AudioTrack? = null
     @Volatile private var sessionActive = false
     @Volatile private var voiceMode = false
+    @Volatile private var agentSummary: String? = null
+    private class AgentResult(val ok: Boolean, val summary: String)
     private val phraseCache = HashMap<String, Pcm>()
     private val deadTts = HashSet<String>()
     private class Contact(val name: String, val clean: String, val number: String)
@@ -280,6 +289,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     private suspend fun act(res: JSONObject, userText: String): Boolean {
         var reply = res.optString("reply").trim()
+        val modelReply = reply
 
         res.optString("remember").trim().takeIf { it.isNotEmpty() }?.let { Memory.add(it) }
 
@@ -292,11 +302,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             if (err != null) { reply = err; break }
             if (idx < list.size - 1) delay(1500)
         }
+        agentSummary?.let { reply = it; agentSummary = null }
 
         if (reply.isNotEmpty()) {
             history.addLast(userText to reply)
             while (history.size > 16) history.removeFirst()
-            speak(reply, false)
+            val sp = res.optString("speech").trim()
+            speak(if (reply == modelReply && sp.isNotEmpty()) sp else reply, false, reply)
         }
         lastInteraction = System.currentTimeMillis()
         return res.optBoolean("done")
@@ -331,7 +343,9 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             }
             "call" -> {
                 val num = resolveNumber(a.optString("contact"))
-                if (num != null && launch(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$num")))) null
+                val act = if (ctx.checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
+                    Intent.ACTION_CALL else Intent.ACTION_DIAL
+                if (num != null && launch(Intent(act, Uri.parse("tel:" + Uri.encode(num))))) null
                 else "مش لاقي الرقم ده"
             }
             "navigate" -> {
@@ -352,6 +366,82 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("label", "Jarvis"))
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
+            }
+            "agent" -> {
+                val r = runAgent(a.optString("goal"))
+                agentSummary = r.summary
+                null
+            }
+            "volume" -> {
+                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                val cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val target = if (a.has("level")) a.optInt("level") * max / 100 else cur + a.optInt("delta") * max / 100
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, target.coerceIn(0, max), AudioManager.FLAG_SHOW_UI)
+                null
+            }
+            "media" -> {
+                val code = when (a.optString("command")) {
+                    "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
+                    "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                    "stop" -> KeyEvent.KEYCODE_MEDIA_STOP
+                    "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
+                    "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+                    else -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                }
+                audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+                null
+            }
+            "flashlight" -> try {
+                val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
+                if (id == null) "مفيش فلاش في الجهاز" else { cm.setTorchMode(id, a.optBoolean("on", true)); null }
+            } catch (e: Exception) { "معرفتش أشغل الفلاش" }
+            "brightness" -> if (!Settings.System.canWrite(ctx)) "محتاج إذن تعديل إعدادات النظام" else {
+                Settings.System.putInt(ctx.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                Settings.System.putInt(ctx.contentResolver, Settings.System.SCREEN_BRIGHTNESS, a.optInt("level", 50).coerceIn(0, 100) * 255 / 100)
+                null
+            }
+            "system" -> {
+                val ok = JarvisAccessibility.instance?.global(a.optString("name")) ?: false
+                if (ok) null else "فعّل خدمة Jarvis من إمكانية الوصول"
+            }
+            "settings" -> {
+                val act = when (a.optString("page")) {
+                    "wifi" -> Settings.ACTION_WIFI_SETTINGS
+                    "bluetooth" -> Settings.ACTION_BLUETOOTH_SETTINGS
+                    "display" -> Settings.ACTION_DISPLAY_SETTINGS
+                    "sound" -> Settings.ACTION_SOUND_SETTINGS
+                    "battery" -> Settings.ACTION_BATTERY_SAVER_SETTINGS
+                    "location" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+                    "apps" -> Settings.ACTION_APPLICATION_SETTINGS
+                    "accessibility" -> Settings.ACTION_ACCESSIBILITY_SETTINGS
+                    "date" -> Settings.ACTION_DATE_SETTINGS
+                    "nfc" -> Settings.ACTION_NFC_SETTINGS
+                    "airplane" -> Settings.ACTION_AIRPLANE_MODE_SETTINGS
+                    "storage" -> Settings.ACTION_INTERNAL_STORAGE_SETTINGS
+                    else -> Settings.ACTION_SETTINGS
+                }
+                if (launch(Intent(act))) null else "معرفتش أفتح الإعدادات"
+            }
+            "calendar" -> {
+                val start = try { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).parse(a.optString("start"))?.time } catch (_: Exception) { null }
+                if (start == null) "معرفتش أفهم ميعاد الحدث" else {
+                    val i = Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI)
+                        .putExtra(CalendarContract.Events.TITLE, a.optString("title"))
+                        .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, start)
+                        .putExtra(CalendarContract.EXTRA_EVENT_END_TIME, start + a.optInt("minutes", 60) * 60_000L)
+                    if (launch(i)) null else "معرفتش أفتح التقويم"
+                }
+            }
+            "sms" -> {
+                val c = a.optString("contact")
+                val msg = a.optString("message")
+                val num = resolveNumber(c)
+                if (num == null || msg.isBlank()) "مش لاقي الرقم ده"
+                else if (ctx.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) "محتاج إذن الرسائل"
+                else if (!confirmSend(c, msg)) "تمام، الغيتها"
+                else sendSms(num, msg)
             }
             "wake_pc" -> if (doWakePc()) null else "عنوان الجهاز مش متظبط"
             "create_project" -> {
@@ -377,18 +467,25 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
     } catch (_: Exception) { -1 }
 
-    private fun systemPrompt(audioMode: Boolean): String {
+    private fun systemPrompt(audioMode: Boolean, userText: String = ""): String {
         val names = contactNames()
         val apps = installedApps().map { it.first }.take(200).joinToString("، ")
         val now = SimpleDateFormat("EEEE d MMMM yyyy، h:mm a", Locale("ar")).format(Date())
         val facts = Memory.all().joinToString("\n") { "- $it" }.ifEmpty { "(لسه مفيش)" }
+        val wantsNotifs = Regex("(اشعار|إشعار|notification|جالي|جاتلي|وصلني|رسايل|رسالة|message|whatsapp|واتساب|مين بعت|ايميل|email)", RegexOption.IGNORE_CASE).containsMatchIn(userText)
+        val notifBlock = if (!wantsNotifs) "" else {
+            val n = JarvisNotifications.recent(8)
+            if (n.isEmpty()) "- الإشعارات الأخيرة: (مفيش، أو إذن الإشعارات مش مفعل)\n"
+            else "- الإشعارات الأخيرة:\n" + n.joinToString("\n") { "  • $it" } + "\n"
+        }
         val extraKeys = if (audioMode) "\"transcript\": \"...\", \"addressed\": true/false, " else ""
         val extraRules = if (audioMode) """
 - transcript: اللي اتقال حرفيا. لو صمت أو ضجيج خليه "".
 - addressed: true لو المتحدث نادى "جارفس" أو "جارفيس" أو Jarvis، أو لو in_conversation = true.
 - لو addressed=false: actions=[] و reply="".""" else ""
         return """أنت J.A.R.V.I.S مساعد شخصي ذكي جدا على موبايل المستخدم. بتناديه دايما "${Keys.name}" بالإنجليزي زي ما هي، حتى وسط الكلام العربي، وخليها جزء طبيعي من ردك (مش في كل جملة).
-شخصيتك: رسمي، خفيف الدم، واثق، ومباشر. رد بنفس لغة المستخدم، وغالبا بالعامية المصرية.
+شخصيتك: رسمي، خفيف الدم، واثق، ومباشر.
+قاعدة اللغة (مهمة جدا): رد دايما بنفس لغة آخر جملة قالها المستخدم. لو كلمك عربي رد بالعامية المصرية، ولو كلمك English رد English بس. متخلطش اللغات إلا لو هو خلط.
 الكلام جاي من تسجيل صوتي، فصحّح الأسماء والحروف الغلط من السياق.
 
 السياق دلوقتي:
@@ -396,9 +493,9 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 - البطارية: ${batteryPercent()}%
 - حاجات عارفها عن المستخدم:
 $facts
-
+$notifBlock
 ارجع JSON فقط بالشكل ده:
-{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "actions": [ {"type": "..."} ], "remember": "", "done": false}
+{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "speech": "...", "actions": [ {"type": "..."} ], "remember": "", "done": false}
 $extraRules
 
 الأوامر الممكنة في actions (ممكن أكتر من واحد بالترتيب لو الطلب فيه خطوات):
@@ -412,6 +509,15 @@ $extraRules
 - {"type":"alarm","hour":0-23,"minute":0-59,"label":"..."}
 - {"type":"timer","seconds":N,"label":"..."}
 - {"type":"wake_pc"}: تشغيل اللابتوب
+- {"type":"sms","contact":"...","message":"..."}: رسالة SMS عادية
+- {"type":"volume","level":0-100} أو {"type":"volume","delta":-20..20}: صوت الميديا
+- {"type":"media","command":"play_pause|play|pause|next|previous|stop"}: تحكم في الأغاني والفيديو
+- {"type":"flashlight","on":true}
+- {"type":"brightness","level":0-100}
+- {"type":"system","name":"home|back|recents|notifications|quick_settings|lock|screenshot|power"}
+- {"type":"calendar","title":"...","start":"yyyy-MM-dd HH:mm","minutes":60}
+- {"type":"settings","page":"wifi|bluetooth|display|sound|battery|location|apps|accessibility|date|nfc|airplane|storage|all"}
+- {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
 - {"type":"create_project","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
 قواعد:
@@ -421,6 +527,8 @@ $extraRules
 - لو محتاج معلومة حديثة (أخبار، طقس، أسعار، نتايج): استخدم web_search وقول إنك فتحت البحث.
 - لو الطلب مش واضح (مثلا مين الشخص): اسأل سؤال واحد قصير وخلي actions=[].
 - لو المستخدم قال معلومة عن نفسه تستحق تفتكرها (اسمه، شغله، تفضيلاته، ناس مهمة): حطها في remember كجملة قصيرة، غير كده سيبها "".
+- speech: نفس reply بالظبط (نفس اللغة) بس معدّل للنطق السليم: الأرقام والتواريخ بالحروف، شكّل (تشكيل خفيف) الكلمات العربي اللي ممكن تتقري غلط، الكلمات الإنجليزي بحروف لاتينية، من غير رموز أو إيموجي أو روابط أو اختصارات، وجمل قصيرة.
+- لو المستخدم عايز تتحكم في الموبايل بشكل مش مغطى بالأوامر الجاهزة، أو سأل عن اللي على الشاشة: استخدم agent.
 - done: خليها true بس لو المستخدم قال إنه خلص ومش عايز حاجة تانية (لا شكرا، كفاية، خلاص)، غير كده false.
 - مع كل أمر: reply تأكيد قصير زي "تمام، فتحت يوتيوب".
 - متخترعش حاجة. لو معرفتش قول معرفش."""
@@ -514,8 +622,23 @@ $extraRules
     }
 
     // ------------------------------------------------------------ LLM
+    private fun langNote(t: String): String {
+        var ar = 0
+        var lat = 0
+        for (c in t) {
+            if (c in '\u0600'..'\u06FF') ar++ else if (c in 'a'..'z' || c in 'A'..'Z') lat++
+        }
+        return when {
+            ar > 0 && ar >= lat -> "اللغة: عربي مصري. رد (reply و speech) بالعربي."
+            lat > 0 -> "Language: English. Reply (reply and speech) in English only."
+            else -> ""
+        }
+    }
+
     private fun llmCall(text: String): JSONObject {
-        val sys = systemPrompt(false)
+        val sys = systemPrompt(false, text)
+        val note = langNote(text)
+        val user = if (note.isEmpty()) text else "$text\n\n[$note]"
         val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
         var last: Exception? = null
         for (p in order) {
@@ -523,11 +646,11 @@ $extraRules
                 val r: JSONObject? = when (p) {
                     "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
                         "https://api.openai.com/v1/chat/completions", Keys.openai,
-                        Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, text) else null
+                        Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, user) else null
                     "groq" -> if (Keys.groq.isNotBlank()) openAiChat(
                         "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
-                        Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, text) else null
-                    else -> if (Keys.gemini.isNotBlank()) geminiGenerate(null, text, true) else null
+                        Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user) else null
+                    else -> if (Keys.gemini.isNotBlank()) geminiGenerate(null, user, true) else null
                 }
                 if (r != null) return r
             } catch (e: Exception) {
@@ -537,12 +660,28 @@ $extraRules
         throw last ?: NoKeyException()
     }
 
-    private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String): JSONObject {
+    private fun agentChat(sys: String, user: String): JSONObject {
+        val order = if (Config.brain() == "groq") listOf("groq", "openai") else listOf("openai", "groq")
+        var last: Exception? = null
+        for (p in order) {
+            try {
+                if (p == "openai" && Keys.openai.isNotBlank()) return openAiChat(
+                    "https://api.openai.com/v1/chat/completions", Keys.openai,
+                    Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, user, false)
+                if (p == "groq" && Keys.groq.isNotBlank()) return openAiChat(
+                    "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
+                    Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user, false)
+            } catch (e: Exception) { last = e }
+        }
+        throw last ?: NoKeyException()
+    }
+
+    private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String, withHistory: Boolean = true): JSONObject {
         var last: HttpException? = null
         for (m in models) {
             try {
                 val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
-                for ((u, r) in history.toList().takeLast(12)) {
+                for ((u, r) in (if (withHistory) history.toList().takeLast(12) else emptyList())) {
                     msgs.put(JSONObject().put("role", "user").put("content", u))
                     msgs.put(JSONObject().put("role", "assistant").put("content", r))
                 }
@@ -895,6 +1034,105 @@ $extraRules
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun sendSms(num: String, msg: String): String? = try {
+        val sm = if (Build.VERSION.SDK_INT >= 31) ctx.getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+        sm.sendMultipartTextMessage(num, null, sm.divideMessage(msg), null, null)
+        null
+    } catch (e: Exception) { "معرفتش ابعت الرسالة" }
+
+    // ------------------------------------------------------------ phone agent (reads the screen, taps, types, scrolls)
+    private fun agentSystem(): String = """You are the hands of a voice assistant called Jarvis. You control an Android phone through the accessibility API and complete the user's GOAL step by step.
+Each turn you get: the GOAL, the user's language, STEPS SO FAR, and the CURRENT SCREEN as a numbered list of UI elements: [index] Class "label" #id (flags).
+Reply with ONE JSON object only:
+{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail","index":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":""}
+Rules:
+- click, long_click and type use "index" from CURRENT SCREEN. type puts "text" into that editable element; enter=true presses search/enter afterwards.
+- scroll: "direction" is the finger swipe direction ("up" reveals content further down the page).
+- open_app: "app" is the app name. Use it first when the goal is inside an app.
+- To change a setting (wifi, bluetooth, brightness, ...) use quick_settings then tap the tile, or open_app "Settings".
+- If the target is not visible, scroll or try another path. Never repeat a failed step more than twice; if stuck, do "fail".
+- risky=true for anything that sends a message, calls, pays, buys, deletes, posts or cannot be undone. Describe what you are about to do in "summary". Never type passwords, card numbers or PINs.
+- When finished use do="done" with "summary": one or two short spoken sentences with the result (or the information the user asked for), in the user's language, no symbols or lists.
+- If the screen is empty or blocked by the app, do "fail" and say so in "summary"."""
+
+    private suspend fun runAgent(goal: String): AgentResult {
+        val a = JarvisAccessibility.instance
+            ?: return AgentResult(false, "فعّل خدمة Jarvis من إمكانية الوصول عشان أقدر أتحكم في الموبايل")
+        if (goal.isBlank()) return AgentResult(false, "مفهمتش المطلوب")
+        if (!(Keys.openai.isNotBlank() || Keys.groq.isNotBlank())) return AgentResult(false, "محتاج مفتاح OpenAI أو Groq")
+        val steps = ArrayList<String>()
+        val lang = langNote(goal)
+        Bus.log("AGENT: $goal")
+        for (i in 1..14) {
+            if (voiceMode && !sessionActive) return AgentResult(false, "تمام، وقفت")
+            val (screen, nodes) = a.dumpScreen()
+            val user = "GOAL: $goal\nUSER LANGUAGE: $lang\nSTEPS SO FAR:\n" +
+                steps.takeLast(8).joinToString("\n").ifEmpty { "(none)" } +
+                "\n\nCURRENT SCREEN:\n" + screen.take(9000).ifEmpty { "(empty - the app may block screen reading, or the screen is off)" }
+            val res = try {
+                withContext(Dispatchers.IO) { agentChat(agentSystem(), user) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return AgentResult(false, "مشكلة في الاتصال بالنت")
+            }
+            val act = res.optString("do")
+            val idx = res.optInt("index", -1)
+            val text = res.optString("text")
+            val summary = res.optString("summary")
+            Bus.log("AGENT $i: $act ${if (idx >= 0) idx else ""} ${text.take(30)}")
+
+            if (act == "done") return AgentResult(true, summary.ifBlank { "تمام" })
+            if (act == "fail") return AgentResult(false, summary.ifBlank { "معرفتش أنفذ المطلوب" })
+
+            if (res.optBoolean("risky") && voiceMode) {
+                speak(summary.ifBlank { "I am about to do something that can't be undone" } + " Go ahead, Boss?", false)
+                val ans = listenText(60)
+                if (ans == null || !isYes(ans)) return AgentResult(false, "تمام، وقفت")
+            }
+
+            val node = nodes.getOrNull(idx)
+            val ok = when (act) {
+                "click" -> node?.let { a.tapNode(it) } ?: false
+                "long_click" -> node?.let { a.longClickNode(it) } ?: false
+                "type" -> a.typeInto(node, text, res.optBoolean("enter"))
+                "scroll" -> a.swipe(res.optString("direction", "up"))
+                "back", "home", "recents", "notifications", "quick_settings" -> a.global(act)
+                "open_app" -> doOpenApp(res.optString("app"))
+                "wait" -> true
+                else -> false
+            }
+            steps.add("$i. $act ${if (idx >= 0) idx else ""} ${text.take(40)} -> ${if (ok) "ok" else "FAILED"}")
+            delay(if (act == "open_app") 1800 else 1100)
+        }
+        return AgentResult(false, "مخلصتش المهمة في الخطوات المسموحة")
+    }
+
+    private fun geminiTts(text: String): Pcm {
+        var last: HttpException? = null
+        for (m in Config.list("gemini_tts_models").ifEmpty { listOf("gemini-2.5-flash-preview-tts") }) {
+            val body = JSONObject()
+                .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(
+                    JSONObject().put("text", "Say in a calm, deep, confident assistant voice: $text")))))
+                .put("generationConfig", JSONObject()
+                    .put("responseModalities", JSONArray().put("AUDIO"))
+                    .put("speechConfig", JSONObject().put("voiceConfig", JSONObject().put("prebuiltVoiceConfig",
+                        JSONObject().put("voiceName", Config.geminiVoice())))))
+            try {
+                val raw = String(postBytes("https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent",
+                    mapOf("x-goog-api-key" to Keys.gemini), body), Charsets.UTF_8)
+                val data = JSONObject(raw).getJSONArray("candidates").getJSONObject(0).getJSONObject("content")
+                    .getJSONArray("parts").getJSONObject(0).getJSONObject("inlineData").getString("data")
+                return Pcm(bytesToShorts(Base64.decode(data, Base64.DEFAULT)), 24000)
+            } catch (e: HttpException) {
+                last = e
+                if (e.code != 400 && e.code != 404) throw e
+            }
+        }
+        throw last ?: Exception("no gemini tts")
+    }
+
     private fun normalizeNumber(raw: String): String {
         var d = raw.filter { it.isDigit() }
         if (d.startsWith("00")) d = d.substring(2)
@@ -1040,19 +1278,22 @@ $extraRules
 
     private fun cloudTts(text: String): Pcm? {
         val order = when (Config.ttsProvider()) {
+            "gemini" -> listOf("gemini")
             "openai" -> listOf("openai")
             "groq" -> listOf("groq")
-            else -> listOf("openai", "groq")
+            else -> listOf("gemini", "openai", "groq")
         }
         for (p in order) {
             if (p in deadTts) continue
             try {
+                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiTts(text)
                 if (p == "openai" && Keys.openai.isNotBlank()) return openAiTts(text)
                 if (p == "groq" && Keys.groq.isNotBlank()) return groqTts(text)
             } catch (e: Exception) {
-                deadTts.add(p)
-                val why = if (e is HttpException) "${e.code} ${e.body.take(90)}" else e.javaClass.simpleName
-                Bus.say("err", "صوت $p مش شغال ($why)، هستخدم البديل")
+                if (e is HttpException && e.code in listOf(400, 401, 403, 404, 429)) {
+                    deadTts.add(p)
+                    Bus.say("err", "صوت $p مش شغال (${e.code} ${e.body.take(80)})، هستخدم البديل")
+                }
             }
         }
         return null
@@ -1118,8 +1359,8 @@ $extraRules
         }
     }
 
-    private suspend fun speak(text: String, cache: Boolean = false) {
-        Bus.say("j", text)
+    private suspend fun speak(text: String, cache: Boolean = false, shown: String = text) {
+        Bus.say("j", shown)
         Bus.state("speaking", "SPEAKING")
         val clean = text.replace(Regex("[*_#`]"), "")
         if (cache) {

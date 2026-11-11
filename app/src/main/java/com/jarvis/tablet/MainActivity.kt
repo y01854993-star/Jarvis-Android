@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
@@ -45,7 +46,8 @@ class MainActivity : Activity() {
         web.loadUrl("file:///android_asset/jarvis-hud.html")
         Bus.sink = { json -> push(json) }
 
-        val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS)
+        val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS,
+            Manifest.permission.CALL_PHONE, Manifest.permission.SEND_SMS)
         if (Build.VERSION.SDK_INT >= 33) needed.add(Manifest.permission.POST_NOTIFICATIONS)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
         val missing = needed.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
@@ -60,8 +62,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-        if (!enabled.contains(packageName) && !askedA11y) {
+        val a11y = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+        if (!a11y.contains(packageName) && !askedA11y) {
             askedA11y = true
             Toast.makeText(this, "فعّل خدمة Jarvis من إعدادات إمكانية الوصول", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -73,6 +75,27 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return
         }
+        val nl = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
+        if (!nl.contains(packageName) && !askedNotif) {
+            askedNotif = true
+            Toast.makeText(this, "فعّل وصول Jarvis للإشعارات", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            return
+        }
+        if (!Settings.System.canWrite(this) && !askedWrite) {
+            askedWrite = true
+            Toast.makeText(this, "اسمح لـ Jarvis بتعديل إعدادات النظام", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
+            return
+        }
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName) && !askedBattery) {
+            askedBattery = true
+            try {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {}
+            return
+        }
         if (Settings.canDrawOverlays(this) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
     }
@@ -80,6 +103,9 @@ class MainActivity : Activity() {
     companion object {
         private var askedA11y = false
         private var askedOverlay = false
+        private var askedNotif = false
+        private var askedWrite = false
+        private var askedBattery = false
     }
 
     override fun onDestroy() {

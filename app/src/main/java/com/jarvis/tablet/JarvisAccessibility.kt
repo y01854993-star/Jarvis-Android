@@ -4,8 +4,10 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Path
+import android.graphics.Rect
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -178,6 +180,112 @@ class JarvisAccessibility : AccessibilityService() {
             if (r != null) return r
         }
         return null
+    }
+
+    // ---------------------------------------------------------- screen reading + gestures (agent)
+    /** numbered, compact description of what is on screen + the matching nodes */
+    fun dumpScreen(maxNodes: Int = 120): Pair<String, List<AccessibilityNodeInfo>> {
+        val root = rootInActiveWindow ?: return "" to emptyList()
+        val nodes = ArrayList<AccessibilityNodeInfo>()
+        val sb = StringBuilder()
+        sb.append("app: ").append(root.packageName).append('\n')
+        walk(root, 0, nodes, sb, maxNodes)
+        return sb.toString() to nodes
+    }
+
+    private fun walk(n: AccessibilityNodeInfo?, depth: Int, out: MutableList<AccessibilityNodeInfo>, sb: StringBuilder, max: Int) {
+        if (n == null || depth > 25 || out.size >= max) return
+        if (n.isVisibleToUser) {
+            val t = n.text?.toString()?.trim().orEmpty()
+            val d = n.contentDescription?.toString()?.trim().orEmpty()
+            val interesting = n.isClickable || n.isEditable || n.isScrollable || n.isCheckable || t.isNotEmpty() || d.isNotEmpty()
+            if (interesting) {
+                val idx = out.size
+                out.add(n)
+                val flags = ArrayList<String>()
+                if (n.isClickable) flags.add("click")
+                if (n.isEditable) flags.add("edit")
+                if (n.isScrollable) flags.add("scroll")
+                if (n.isCheckable) flags.add(if (n.isChecked) "checked" else "unchecked")
+                if (!n.isEnabled) flags.add("disabled")
+                val cls = n.className?.toString()?.substringAfterLast('.') ?: ""
+                val label = (if (t.isNotEmpty()) t else d).replace("\n", " ").take(70)
+                val id = n.viewIdResourceName?.substringAfterLast('/') ?: ""
+                sb.append('[').append(idx).append("] ").append(cls)
+                if (label.isNotEmpty()) sb.append(" \"").append(label).append('"')
+                if (id.isNotEmpty()) sb.append(" #").append(id)
+                if (flags.isNotEmpty()) sb.append(" (").append(flags.joinToString(",")).append(')')
+                sb.append('\n')
+            }
+        }
+        for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1, out, sb, max)
+    }
+
+    fun tapNode(n: AccessibilityNodeInfo): Boolean {
+        if (clickNode(n)) return true
+        val r = Rect()
+        n.getBoundsInScreen(r)
+        return tapAt(r.centerX().toFloat(), r.centerY().toFloat())
+    }
+
+    fun longClickNode(n: AccessibilityNodeInfo): Boolean {
+        var cur: AccessibilityNodeInfo? = n
+        var depth = 0
+        while (cur != null && depth < 6) {
+            if (cur.isLongClickable) return cur.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+            cur = cur.parent
+            depth++
+        }
+        return false
+    }
+
+    fun tapAt(x: Float, y: Float): Boolean {
+        val p = Path().apply { moveTo(x, y) }
+        return dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 60)).build(), null, null
+        )
+    }
+
+    fun swipe(direction: String): Boolean {
+        val dm = resources.displayMetrics
+        val w = dm.widthPixels.toFloat()
+        val h = dm.heightPixels.toFloat()
+        val p = Path()
+        when (direction) {
+            "up" -> { p.moveTo(w * 0.5f, h * 0.75f); p.lineTo(w * 0.5f, h * 0.25f) }
+            "down" -> { p.moveTo(w * 0.5f, h * 0.25f); p.lineTo(w * 0.5f, h * 0.75f) }
+            "left" -> { p.moveTo(w * 0.8f, h * 0.5f); p.lineTo(w * 0.2f, h * 0.5f) }
+            "right" -> { p.moveTo(w * 0.2f, h * 0.5f); p.lineTo(w * 0.8f, h * 0.5f) }
+            else -> return false
+        }
+        return dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 350)).build(), null, null
+        )
+    }
+
+    fun typeInto(n: AccessibilityNodeInfo?, text: String, enter: Boolean): Boolean {
+        val target = n ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        val ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (ok && enter && Build.VERSION.SDK_INT >= 30) {
+            target.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        }
+        return ok
+    }
+
+    fun global(name: String): Boolean = when (name) {
+        "home" -> performGlobalAction(GLOBAL_ACTION_HOME)
+        "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
+        "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
+        "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+        "quick_settings" -> performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+        "power" -> performGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
+        "lock" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) else false
+        "screenshot" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT) else false
+        else -> false
     }
 
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {

@@ -25,6 +25,7 @@ object Keys {
             .putString("openai", json.optString("gpt").trim())
             .putString("groq", json.optString("groq").trim())
             .putString("name", json.optString("name").trim())
+            .putString("gemini", json.optString("gem").trim())
             .apply()
     }
 

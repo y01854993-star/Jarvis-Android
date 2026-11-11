@@ -10,18 +10,37 @@
   };
   const hud = $("hud"); if (hud) hud.onclick = window.toggle;
 
-  // مفاتيح الصفحة (Groq / OpenAI) بتتبعت للتطبيق
+  // خانة مفتاح Gemini (للصوت)، والضغط على الساعة بيظهر/يخفي لوحة المفاتيح
+  const panel = $("setupPanel");
+  if (panel && !$("kGem")) {
+    const div = document.createElement("div");
+    div.className = "ig";
+    div.innerHTML = '<label>Gemini Key (صوت أفضل - مجاني)</label><input type="password" id="kGem" placeholder="AIza...">';
+    panel.insertBefore(div, $("saveBtn"));
+    $("kGem").value = localStorage.getItem("k_gem") || "";
+  }
+  const clock = $("clock");
+  if (clock && panel) clock.onclick = function () {
+    panel.style.display = (panel.style.display === "none") ? "block" : "none";
+  };
+
+  // مفاتيح الصفحة (Groq / OpenAI / Gemini) بتتبعت للتطبيق
   function pushKeys() {
     try {
       B.setKeys(JSON.stringify({
         gpt: (typeof keys !== "undefined" && keys.gpt) || "",
         groq: (typeof keys !== "undefined" && keys.groq) || "",
+        gem: localStorage.getItem("k_gem") || "",
         name: (typeof userName !== "undefined" && userName) || ""
       }));
     } catch (e) {}
   }
   const origSave = window.saveKeys;
-  window.saveKeys = function () { if (origSave) origSave(); pushKeys(); };
+  window.saveKeys = function () {
+    const g = $("kGem"); if (g) localStorage.setItem("k_gem", g.value.trim());
+    if (origSave) origSave();
+    pushKeys();
+  };
   pushKeys();
 
   window.jarvisEvent = function (m) {
