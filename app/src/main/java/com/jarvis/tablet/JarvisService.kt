@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ class JarvisService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var engine: Engine? = null
     private var wake: PowerManager.WakeLock? = null
+    private var bubble: Bubble? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -44,10 +46,29 @@ class JarvisService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ensureBubble()
+        return START_STICKY
+    }
+
+    private fun ensureBubble() {
+        if (bubble == null && Settings.canDrawOverlays(this)) {
+            bubble = Bubble(
+                this,
+                { engine?.bubbleTap() },
+                {
+                    startActivity(
+                        Intent(this, MainActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    )
+                }
+            ).also { it.show() }
+        }
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        bubble?.hide()
         scope.cancel()
         wake?.takeIf { it.isHeld }?.release()
         super.onDestroy()

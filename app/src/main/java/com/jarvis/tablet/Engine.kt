@@ -63,6 +63,9 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var busy = false
     @Volatile private var listeningNow = false
     @Volatile private var track: AudioTrack? = null
+    @Volatile private var sessionActive = false
+    @Volatile private var voiceMode = false
+    private val phraseCache = HashMap<String, Pcm>()
     private val deadTts = HashSet<String>()
     private class Contact(val name: String, val clean: String, val number: String)
     private var contactsCache: List<Contact> = emptyList()
@@ -73,7 +76,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Memory.init(ctx)
         tts = TextToSpeech(ctx) { status -> if (status == TextToSpeech.SUCCESS) ttsReady = true }
         Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
-        Bus.onToggle = { lang -> toggleListen(lang) }
+        Bus.onToggle = { _ -> bubbleTap() }
+        scope.launch(Dispatchers.IO) { delay(2500); prewarm() }
         pushStatus()
         Bus.log("Jarvis engine online")
         if (!Keys.hasLlm()) Bus.say("err", "حط مفتاح Groq أو OpenAI في الخانة اللي فوق")
@@ -134,7 +138,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                         Bus.say("err", "مشكلة في الاتصال بالنت (${e.javaClass.simpleName})"); return@withBusy
                     }
                     if (text.isBlank()) { Bus.say("err", "مفهمتش الكلام، جرّب تاني"); return@withBusy }
-                    process(text)
+                    voiceMode = true
+                    try { process(text) } finally { voiceMode = false }
                 }
             } else {
                 handleAudio(wav, true)
@@ -151,21 +156,120 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         withBusy { process(text) }
     }
 
-    private suspend fun process(text: String) {
-        Bus.state("thinking", "THINKING")
-        Bus.say("u", text)
-        val res = try {
+    private suspend fun think(text: String): JSONObject? {
+        return try {
             withContext(Dispatchers.IO) { llmCall(text) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: NoKeyException) {
-            Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); return
+            Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); null
         } catch (e: HttpException) {
-            Bus.say("err", httpMessage(e)); return
+            Bus.say("err", httpMessage(e)); null
         } catch (e: Exception) {
-            Bus.say("err", "مشكلة في الاتصال بالنت (${e.javaClass.simpleName})"); return
+            Bus.say("err", "مشكلة في الاتصال بالنت (${e.javaClass.simpleName})"); null
         }
+    }
+
+    private suspend fun process(text: String) {
+        Bus.state("thinking", "THINKING")
+        Bus.say("u", text)
+        val res = think(text) ?: return
         act(res, text)
+    }
+
+    // ------------------------------------------------------------ conversation session (bubble / HUD tap)
+    fun bubbleTap() {
+        if (sessionActive) { cancelSession(); return }
+        if (busy) return
+        scope.launch(Dispatchers.Default) { runSession() }
+    }
+
+    private fun cancelSession() {
+        sessionActive = false
+        listeningNow = false
+        tts?.stop()
+        try { track?.stop() } catch (_: Exception) {}
+    }
+
+    private suspend fun runSession() {
+        if (!Keys.hasLlm()) { Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); return }
+        if (busy) return
+        busy = true
+        sessionActive = true
+        voiceMode = true
+        try {
+            speak(Config.wakePhrase(), true)
+            var round = 0
+            while (sessionActive && round < 8) {
+                val text = listenText(if (round == 0) 90 else 70) ?: break
+                if (!sessionActive) break
+                if (isNoThanks(text)) { speak(Config.byePhrase(), true); break }
+                Bus.state("thinking", "THINKING")
+                Bus.say("u", text)
+                val res = think(text) ?: break
+                val done = act(res, text)
+                if (done || !sessionActive) break
+                speak(Config.followupPhrase(), true)
+                round++
+            }
+        } finally {
+            sessionActive = false
+            voiceMode = false
+            listeningNow = false
+            busy = false
+            Bus.state("", IDLE)
+        }
+    }
+
+    /** records one utterance and returns its transcript (language auto-detected), or null */
+    private suspend fun listenText(waitFrames: Int): String? {
+        if (!(Keys.groq.isNotBlank() || Keys.openai.isNotBlank())) {
+            Bus.say("err", "محتاج مفتاح Groq أو OpenAI عشان أفهم الصوت"); return null
+        }
+        listeningNow = true
+        Bus.state("listening", "LISTENING")
+        val pcm = recordUtterance(waitFrames)
+        listeningNow = false
+        if (pcm == null) return null
+        Bus.state("thinking", "THINKING")
+        val wav = toWav(pcm)
+        return try {
+            withContext(Dispatchers.IO) { transcribe(wav, "auto") }.ifBlank { null }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            Bus.say("err", httpMessage(e)); null
+        } catch (e: Exception) {
+            Bus.say("err", "مشكلة في الاتصال بالنت"); null
+        }
+    }
+
+    private fun isNoThanks(t: String): Boolean {
+        val s = normAr(t)
+        if (s.isEmpty()) return false
+        val strong = listOf("no thanks", "no thank you", "nothing else", "thats all", "that is all", "im good",
+            "nope", "لا شكرا", "لا مفيش", "مفيش حاجه", "كفايه", "خلاص", "مش عايز", "مش محتاج", "لا يا")
+        if (strong.any { s.contains(it) }) return true
+        val words = s.split(" ")
+        val weak = setOf("no", "nope", "thanks", "thx", "لا", "شكرا")
+        return words.size <= 2 && words.any { it in weak }
+    }
+
+    private fun isYes(t: String): Boolean {
+        val words = normAr(t).split(" ")
+        val no = setOf("no", "nope", "cancel", "stop", "لا", "الغي", "بلاش", "متبعتش", "وقف")
+        if (words.any { it in no }) return false
+        val yes = setOf("yes", "yeah", "yep", "sure", "ok", "okay", "send", "go", "ايوه", "ايوا", "اه", "نعم",
+            "تمام", "ابعت", "ارسل", "اوك", "ماشي", "طبعا", "يلا", "اكيد")
+        return words.any { it in yes }
+    }
+
+    private suspend fun confirmSend(target: String, message: String): Boolean {
+        if (!voiceMode || !Config.confirmMessages()) return true
+        if (!(Keys.groq.isNotBlank() || Keys.openai.isNotBlank())) return true
+        speak("To $target: $message. Shall I send it, Boss?", false)
+        val ans = listenText(60) ?: return false
+        return isYes(ans)
     }
 
     private fun httpMessage(e: HttpException): String = when (e.code) {
@@ -174,7 +278,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         else -> "الـ API رجّع خطأ ${e.code}: " + e.body.take(140)
     }
 
-    private suspend fun act(res: JSONObject, userText: String) {
+    private suspend fun act(res: JSONObject, userText: String): Boolean {
         var reply = res.optString("reply").trim()
 
         res.optString("remember").trim().takeIf { it.isNotEmpty() }?.let { Memory.add(it) }
@@ -192,9 +296,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         if (reply.isNotEmpty()) {
             history.addLast(userText to reply)
             while (history.size > 16) history.removeFirst()
-            speak(reply)
+            speak(reply, false)
         }
         lastInteraction = System.currentTimeMillis()
+        return res.optBoolean("done")
     }
 
     /** returns an error sentence, or null when OK */
@@ -210,8 +315,20 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val i = view("https://www.youtube.com/results?search_query=" + enc(q))
                 if (q.isNotBlank() && launch(i)) null else "معرفتش افتح يوتيوب"
             }
-            "whatsapp" -> if (doWhatsapp(a.optString("contact"), a.optString("message"))) null
-                          else "مش لاقي الرقم ده، ضيفه في جهات الاتصال"
+            "whatsapp" -> {
+                val c = a.optString("contact")
+                val msg = a.optString("message")
+                if (c.isNotBlank() && msg.isNotBlank() && !confirmSend(c, msg)) "تمام، الغيتها"
+                else if (doWhatsapp(c, msg)) null
+                else "مش لاقي الرقم ده، ضيفه في جهات الاتصال"
+            }
+            "whatsapp_group" -> {
+                val g = a.optString("group")
+                val msg = a.optString("message")
+                if (g.isBlank() || msg.isBlank()) "ناقصني اسم الجروب أو الرسالة"
+                else if (!confirmSend(g, msg)) "تمام، الغيتها"
+                else doWhatsappGroup(g, a.optString("group_alt"), msg)
+            }
             "call" -> {
                 val num = resolveNumber(a.optString("contact"))
                 if (num != null && launch(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$num")))) null
@@ -238,9 +355,9 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             }
             "wake_pc" -> if (doWakePc()) null else "عنوان الجهاز مش متظبط"
             "create_project" -> {
-                val pr = a.optString("project_prompt")
-                if (pr.isNotBlank() && launch(view("https://lovable.dev/?autosubmit=true#prompt=" + enc(pr)))) null
-                else "معرفتش افتح صفحة المشروع"
+                val pr = a.optString("project_prompt").take(1500)
+                if (pr.isBlank() || !launch(view("https://lovable.dev/?autosubmit=true#prompt=" + enc(pr)))) "معرفتش افتح لوفابل"
+                else { tryLovableSend(); null }
             }
             else -> null
         }
@@ -281,7 +398,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 $facts
 
 ارجع JSON فقط بالشكل ده:
-{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "actions": [ {"type": "..."} ], "remember": ""}
+{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "actions": [ {"type": "..."} ], "remember": "", "done": false}
 $extraRules
 
 الأوامر الممكنة في actions (ممكن أكتر من واحد بالترتيب لو الطلب فيه خطوات):
@@ -289,6 +406,7 @@ $extraRules
 - {"type":"web_search","query":"..."}
 - {"type":"youtube_search","query":"..."}: بحث وتشغيل في يوتيوب
 - {"type":"whatsapp","contact":"...","message":"..."}: contact: اختار أقرب اسم للي المستخدم قاله من الأسماء دي (الأسماء متنضفة من الأرقام والرموز، فـ "ماما 010" بتظهر "ماما"): $names
+- {"type":"whatsapp_group","group":"...","group_alt":"...","message":"..."}: لما المستخدم يقول جروب أو مجموعة واتساب (زي "ذا فاميلي") استخدم ده، مش whatsapp. group الاسم زي ما اتقال، و group_alt أقرب كتابة تانية محتملة للاسم (إنجليزي أو عربي)
 - {"type":"call","contact":"..."}
 - {"type":"navigate","place":"..."}: خريطة وتوجيه
 - {"type":"alarm","hour":0-23,"minute":0-59,"label":"..."}
@@ -303,6 +421,7 @@ $extraRules
 - لو محتاج معلومة حديثة (أخبار، طقس، أسعار، نتايج): استخدم web_search وقول إنك فتحت البحث.
 - لو الطلب مش واضح (مثلا مين الشخص): اسأل سؤال واحد قصير وخلي actions=[].
 - لو المستخدم قال معلومة عن نفسه تستحق تفتكرها (اسمه، شغله، تفضيلاته، ناس مهمة): حطها في remember كجملة قصيرة، غير كده سيبها "".
+- done: خليها true بس لو المستخدم قال إنه خلص ومش عايز حاجة تانية (لا شكرا، كفاية، خلاص)، غير كده false.
 - مع كل أمر: reply تأكيد قصير زي "تمام، فتحت يوتيوب".
 - متخترعش حاجة. لو معرفتش قول معرفش."""
     }
@@ -336,7 +455,7 @@ $extraRules
 
     // ------------------------------------------------------------ speech to text (Whisper)
     private fun transcribe(wav: ByteArray, lang: String): String {
-        val code = if (lang.startsWith("ar")) "ar" else "en"
+        val code = when { lang.startsWith("ar") -> "ar"; lang.startsWith("en") -> "en"; else -> "" }
         var last: Exception? = null
         if (Keys.groq.isNotBlank()) {
             try {
@@ -369,7 +488,7 @@ $extraRules
                     fun field(n: String, v: String) =
                         w("--$boundary\r\nContent-Disposition: form-data; name=\"$n\"\r\n\r\n$v\r\n")
                     field("model", m)
-                    field("language", lang)
+                    if (lang.isNotEmpty()) field("language", lang)
                     field("response_format", "json")
                     field("temperature", "0")
                     field("prompt", "أوامر لمساعد شخصي: جارفس، افتح، ابعت واتساب، دور على، اتصل بـ، فكرني.")
@@ -523,7 +642,7 @@ $extraRules
     // ------------------------------------------------------------ recording
     /** Records until ~1.2s of silence after speech (max 16s). Returns null if nothing was said. */
     @SuppressLint("MissingPermission")
-    private suspend fun recordUtterance(): ShortArray? = withContext(Dispatchers.IO) {
+    private suspend fun recordUtterance(waitFrames: Int = 70): ShortArray? = withContext(Dispatchers.IO) {
         val rate = 16000
         val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) { Bus.say("err", "المايك مش شغال"); return@withContext null }
@@ -566,7 +685,7 @@ $extraRules
                     silent++
                 }
                 if (started) speech.add(chunk) else { pre.addLast(chunk); if (pre.size > 4) pre.removeFirst() }
-                if (!started && frames > 70) break        // nothing said for ~7s
+                if (!started && frames > waitFrames) break        // nothing said for ~7s
                 if (started && silent >= 12) break        // 1.2s of silence = done
             }
         } finally {
@@ -727,6 +846,53 @@ $extraRules
             if (nk.contains(q) || q.contains(nk)) return cfg.getString(k)
         }
         return null
+    }
+
+    /** Searches the WhatsApp chat list (groups included) via accessibility, then types and sends. Returns an error sentence or null. */
+    private suspend fun doWhatsappGroup(group: String, alt: String, message: String): String? {
+        val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول عشان أدور في الجروبات"
+        val pm = ctx.packageManager
+        val pkg = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pm.getLaunchIntentForPackage(it) != null }
+            ?: return "الواتساب مش متثبت"
+        val li = pm.getLaunchIntentForPackage(pkg) ?: return "معرفتش افتح الواتساب"
+        Bus.log("WHATSAPP GROUP -> $group")
+        a.launch(li)
+        delay(2000)
+        var tries = 0
+        while (tries < 5 && !a.clickFirst(listOf("$pkg:id/menuitem_search"), listOf("Search", "بحث"))) {
+            a.back()
+            delay(700)
+            tries++
+            if (tries == 3) { a.launch(li); delay(1600) }
+        }
+        if (tries >= 5) return "معرفتش ألاقي البحث في الواتساب"
+        delay(800)
+        var opened = false
+        for (n in listOf(group, alt).filter { it.isNotBlank() }.distinct()) {
+            if (!a.setTextFirst(listOf("$pkg:id/search_input"), n)) continue
+            delay(1600)
+            val q = normAr(n)
+            if (q.isNotEmpty() && a.clickTextMatching { t -> normAr(t).let { it == q || it.contains(q) } }) { opened = true; break }
+        }
+        if (!opened) return "مش لاقي جروب اسمه $group"
+        delay(1600)
+        if (!a.setTextFirst(listOf("$pkg:id/entry"), message)) return "معرفتش أكتب الرسالة في الجروب"
+        delay(600)
+        if (!a.clickFirst(listOf("$pkg:id/send"), listOf("Send", "إرسال"))) return "كتبت الرسالة بس معرفتش أدوس إرسال"
+        return null
+    }
+
+    /** Lovable only prefills the prompt; try to press its send button (best effort). */
+    private suspend fun tryLovableSend() {
+        val a = JarvisAccessibility.instance ?: return
+        delay(7000)
+        repeat(6) {
+            if (a.clickTextMatching { it.equals("send", true) || it.equals("submit", true) || it == "إرسال" }) {
+                Bus.log("LOVABLE send pressed")
+                return
+            }
+            delay(2500)
+        }
     }
 
     private fun normalizeNumber(raw: String): String {
@@ -940,15 +1106,33 @@ $extraRules
         }
     }
 
-    private suspend fun speak(text: String) {
+    private fun prewarm() {
+        if (Config.ttsProvider() == "system") return
+        for (t in listOf(Config.wakePhrase(), Config.followupPhrase(), Config.byePhrase())) {
+            if (phraseCache.containsKey(t)) continue
+            try {
+                val pcm = cloudTts(t) ?: continue
+                val fx = Config.robotFx()
+                phraseCache[t] = if (fx > 0.0) robotize(pcm, fx) else pcm
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun speak(text: String, cache: Boolean = false) {
         Bus.say("j", text)
         Bus.state("speaking", "SPEAKING")
         val clean = text.replace(Regex("[*_#`]"), "")
+        if (cache) {
+            val hit = phraseCache[clean]
+            if (hit != null) { playPcm(hit); delay(250); return }
+        }
         if (Config.ttsProvider() != "system") {
             val pcm = try { withContext(Dispatchers.IO) { cloudTts(clean) } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
             if (pcm != null) {
                 val fx = Config.robotFx()
-                playPcm(if (fx > 0.0) robotize(pcm, fx) else pcm)
+                val out = if (fx > 0.0) robotize(pcm, fx) else pcm
+                if (cache) phraseCache[clean] = out
+                playPcm(out)
                 delay(300)
                 return
             }

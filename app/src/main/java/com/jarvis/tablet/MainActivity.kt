@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -60,10 +61,25 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-        if (!enabled.contains(packageName)) {
+        if (!enabled.contains(packageName) && !askedA11y) {
+            askedA11y = true
             Toast.makeText(this, "فعّل خدمة Jarvis من إعدادات إمكانية الوصول", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            return
         }
+        if (!Settings.canDrawOverlays(this) && !askedOverlay) {
+            askedOverlay = true
+            Toast.makeText(this, "فعّل \"العرض فوق التطبيقات\" لـ Jarvis عشان الزر العائم", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
+        if (Settings.canDrawOverlays(this) &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
+    }
+
+    companion object {
+        private var askedA11y = false
+        private var askedOverlay = false
     }
 
     override fun onDestroy() {

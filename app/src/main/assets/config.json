@@ -36,5 +36,9 @@
   "tts_provider": "auto",
   "tts_voice": "onyx",
   "groq_arabic_voice": "fahad",
-  "robot_fx": 0.7
+  "robot_fx": 0.7,
+  "wake_phrase": "Yes, Boss",
+  "followup_phrase": "Anything else, Boss?",
+  "bye_phrase": "As you wish, Boss.",
+  "confirm_messages": true
 }

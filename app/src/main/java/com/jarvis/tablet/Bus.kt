@@ -10,12 +10,14 @@ object Bus {
     @Volatile var lastStatus: String? = null
     @Volatile var onText: ((String) -> Unit)? = null
     @Volatile var onToggle: ((String) -> Unit)? = null
+    @Volatile var overlay: ((String) -> Unit)? = null
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     fun emit(obj: JSONObject) {
         val s = obj.toString()
         if (obj.optString("type") == "status") lastStatus = s
         sink?.invoke(s)
+        overlay?.invoke(s)
     }
 
     fun log(text: String) {

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Path
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -114,6 +115,69 @@ class JarvisAccessibility : AccessibilityService() {
             dispatchGesture(g, null, null)
             Bus.log("CALL ANSWER tap sent")
         }
+    }
+
+    // ---------------------------------------------------------- UI automation helpers (used by Engine)
+    fun clickFirst(ids: List<String>, texts: List<String>): Boolean {
+        val root = rootInActiveWindow ?: return false
+        for (id in ids) {
+            val n = root.findAccessibilityNodeInfosByViewId(id).firstOrNull()
+            if (n != null && clickNode(n)) return true
+        }
+        for (t in texts) {
+            val n = root.findAccessibilityNodeInfosByText(t).firstOrNull { it.isVisibleToUser }
+            if (n != null && clickNode(n)) return true
+        }
+        return false
+    }
+
+    fun setTextFirst(ids: List<String>, text: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        var node: AccessibilityNodeInfo? = null
+        for (id in ids) {
+            node = root.findAccessibilityNodeInfosByViewId(id).firstOrNull()
+            if (node != null) break
+        }
+        if (node == null) node = findEditable(root, 0)
+        if (node == null) return false
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    /** clicks the first visible, non-editable node whose text or description satisfies [match] */
+    fun clickTextMatching(match: (String) -> Boolean): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val n = findText(root, match, 0) ?: return false
+        return clickNode(n)
+    }
+
+    fun back() { performGlobalAction(GLOBAL_ACTION_BACK) }
+
+    private fun findEditable(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 14) return null
+        if (n.isEditable) return n
+        for (i in 0 until n.childCount) {
+            val r = findEditable(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun findText(n: AccessibilityNodeInfo?, match: (String) -> Boolean, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 16) return null
+        if (!n.isEditable && n.isVisibleToUser) {
+            val t = n.text?.toString().orEmpty()
+            val d = n.contentDescription?.toString().orEmpty()
+            if ((t.isNotEmpty() && match(t)) || (d.isNotEmpty() && match(d))) return n
+        }
+        for (i in 0 until n.childCount) {
+            val r = findText(n.getChild(i), match, depth + 1)
+            if (r != null) return r
+        }
+        return null
     }
 
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {
