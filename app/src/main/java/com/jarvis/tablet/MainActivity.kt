@@ -44,10 +44,11 @@ class MainActivity : Activity() {
         web.loadUrl("file:///android_asset/jarvis-hud.html")
         Bus.sink = { json -> push(json) }
 
-        val needed = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS)
         if (Build.VERSION.SDK_INT >= 33) needed.add(Manifest.permission.POST_NOTIFICATIONS)
-        if (needed.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) startEngine()
-        else requestPermissions(needed.toTypedArray(), 1)
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
+        val missing = needed.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 1)
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
