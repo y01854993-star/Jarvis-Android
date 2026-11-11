@@ -16,7 +16,7 @@ object Keys {
     val groq: String get() = sp.getString("groq", "") ?: ""
     val openai: String get() = sp.getString("openai", "") ?: ""
     val gemini: String get() = (sp.getString("gemini", "") ?: "").ifBlank { BuildConfig.GEMINI_KEY }
-    val name: String get() = (sp.getString("name", "") ?: "").ifBlank { "يا فندم" }
+    val name: String get() = (sp.getString("name", "") ?: "").trim().let { if (it.isBlank() || it == "يا فندم") "Boss" else it }
 
     fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank()
 
