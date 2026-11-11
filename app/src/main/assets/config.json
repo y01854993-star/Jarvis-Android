@@ -31,5 +31,10 @@
   "openai_models": [
     "gpt-4o",
     "gpt-4o-mini"
-  ]
+  ],
+  "brain": "auto",
+  "tts_provider": "auto",
+  "tts_voice": "onyx",
+  "groq_arabic_voice": "fahad",
+  "robot_fx": 0.7
 }

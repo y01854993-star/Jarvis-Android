@@ -5,9 +5,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.net.Uri
 import android.os.BatteryManager
 import android.provider.AlarmClock
@@ -39,6 +41,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 class HttpException(val code: Int, val body: String = "") : Exception("HTTP $code")
@@ -56,6 +62,11 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private val history = ArrayDeque<Pair<String, String>>()
     @Volatile private var busy = false
     @Volatile private var listeningNow = false
+    @Volatile private var track: AudioTrack? = null
+    private val deadTts = HashSet<String>()
+    private class Contact(val name: String, val clean: String, val number: String)
+    private var contactsCache: List<Contact> = emptyList()
+    private var contactsAt = 0L
 
     fun start() {
         Keys.init(ctx)
@@ -96,6 +107,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         if (listeningNow) { listeningNow = false; return }     // second tap cancels
         if (!Keys.hasLlm()) { Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); return }
         tts?.stop()
+        try { track?.stop() } catch (_: Exception) {}
         listeningNow = true
         Bus.state("listening", "LISTENING")
         scope.launch(Dispatchers.Default) { listenOnce(lang) }
@@ -179,7 +191,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
         if (reply.isNotEmpty()) {
             history.addLast(userText to reply)
-            while (history.size > 8) history.removeFirst()
+            while (history.size > 16) history.removeFirst()
             speak(reply)
         }
         lastInteraction = System.currentTimeMillis()
@@ -249,7 +261,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     } catch (_: Exception) { -1 }
 
     private fun systemPrompt(audioMode: Boolean): String {
-        val names = Config.contacts().keys().asSequence().joinToString("، ").ifEmpty { "(لا يوجد)" }
+        val names = contactNames()
         val apps = installedApps().map { it.first }.take(200).joinToString("، ")
         val now = SimpleDateFormat("EEEE d MMMM yyyy، h:mm a", Locale("ar")).format(Date())
         val facts = Memory.all().joinToString("\n") { "- $it" }.ifEmpty { "(لسه مفيش)" }
@@ -269,14 +281,14 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 $facts
 
 ارجع JSON فقط بالشكل ده:
-{$extraKeys"reply": "...", "actions": [ {"type": "..."} ], "remember": ""}
+{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "actions": [ {"type": "..."} ], "remember": ""}
 $extraRules
 
 الأوامر الممكنة في actions (ممكن أكتر من واحد بالترتيب لو الطلب فيه خطوات):
 - {"type":"open_app","app":"..."}: app اسم واحد بالظبط من التطبيقات دي: $apps
 - {"type":"web_search","query":"..."}
 - {"type":"youtube_search","query":"..."}: بحث وتشغيل في يوتيوب
-- {"type":"whatsapp","contact":"...","message":"..."}: contact الاسم زي ما المستخدم قاله (من جهات الاتصال أو من: $names)
+- {"type":"whatsapp","contact":"...","message":"..."}: contact: اختار أقرب اسم للي المستخدم قاله من الأسماء دي (الأسماء متنضفة من الأرقام والرموز، فـ "ماما 010" بتظهر "ماما"): $names
 - {"type":"call","contact":"..."}
 - {"type":"navigate","place":"..."}: خريطة وتوجيه
 - {"type":"alarm","hour":0-23,"minute":0-59,"label":"..."}
@@ -285,7 +297,9 @@ $extraRules
 - {"type":"create_project","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
 قواعد:
-- لو سؤال عادي أو معلومة عامة: actions=[] و reply إجابة صحيحة ومختصرة (جملة لتلات جمل) من غير رموز أو تنسيق، لأنها هتتقال بصوت.
+- فكّر في "thought" الأول: المستخدم عايز إيه فعلا؟ في إيه معنى ضمني؟ هل الطلب فيه خطوات؟
+- للأوامر: reply قصير. للأسئلة والشرح والمعلومات: جاوب بعمق ووضوح (من 4 لـ 8 جمل) مع السبب والمثال لو مفيد، من غير رموز أو تنسيق لأنها هتتقال بصوت.
+- لو المستخدم بيحكي أو بيفكر معاك: ناقشه كصديق ذكي، وادي رأيك بصراحة.
 - لو محتاج معلومة حديثة (أخبار، طقس، أسعار، نتايج): استخدم web_search وقول إنك فتحت البحث.
 - لو الطلب مش واضح (مثلا مين الشخص): اسأل سؤال واحد قصير وخلي actions=[].
 - لو المستخدم قال معلومة عن نفسه تستحق تفتكرها (اسمه، شغله، تفضيلاته، ناس مهمة): حطها في remember كجملة قصيرة، غير كده سيبها "".
@@ -323,12 +337,19 @@ $extraRules
     // ------------------------------------------------------------ speech to text (Whisper)
     private fun transcribe(wav: ByteArray, lang: String): String {
         val code = if (lang.startsWith("ar")) "ar" else "en"
-        return if (Keys.groq.isNotBlank()) {
-            whisper("https://api.groq.com/openai/v1/audio/transcriptions", Keys.groq,
-                Config.list("groq_stt_models").ifEmpty { listOf("whisper-large-v3-turbo", "whisper-large-v3") }, wav, code)
-        } else {
-            whisper("https://api.openai.com/v1/audio/transcriptions", Keys.openai, listOf("whisper-1"), wav, code)
+        var last: Exception? = null
+        if (Keys.groq.isNotBlank()) {
+            try {
+                return whisper("https://api.groq.com/openai/v1/audio/transcriptions", Keys.groq,
+                    Config.list("groq_stt_models").ifEmpty { listOf("whisper-large-v3-turbo", "whisper-large-v3") }, wav, code)
+            } catch (e: Exception) { last = e }
         }
+        if (Keys.openai.isNotBlank()) {
+            try {
+                return whisper("https://api.openai.com/v1/audio/transcriptions", Keys.openai, listOf("whisper-1"), wav, code)
+            } catch (e: Exception) { last = e }
+        }
+        throw last ?: NoKeyException()
     }
 
     private fun whisper(url: String, key: String, models: List<String>, wav: ByteArray, lang: String): String {
@@ -376,18 +397,25 @@ $extraRules
     // ------------------------------------------------------------ LLM
     private fun llmCall(text: String): JSONObject {
         val sys = systemPrompt(false)
-        return when {
-            Keys.groq.isNotBlank() -> openAiChat(
-                "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
-                Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, text
-            )
-            Keys.openai.isNotBlank() -> openAiChat(
-                "https://api.openai.com/v1/chat/completions", Keys.openai,
-                Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, text
-            )
-            Keys.gemini.isNotBlank() -> geminiGenerate(null, text, true)
-            else -> throw NoKeyException()
+        val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
+        var last: Exception? = null
+        for (p in order) {
+            try {
+                val r: JSONObject? = when (p) {
+                    "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
+                        "https://api.openai.com/v1/chat/completions", Keys.openai,
+                        Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, text) else null
+                    "groq" -> if (Keys.groq.isNotBlank()) openAiChat(
+                        "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
+                        Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, text) else null
+                    else -> if (Keys.gemini.isNotBlank()) geminiGenerate(null, text, true) else null
+                }
+                if (r != null) return r
+            } catch (e: Exception) {
+                last = e
+            }
         }
+        throw last ?: NoKeyException()
     }
 
     private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String): JSONObject {
@@ -395,7 +423,7 @@ $extraRules
         for (m in models) {
             try {
                 val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
-                for ((u, r) in history.toList().takeLast(6)) {
+                for ((u, r) in history.toList().takeLast(12)) {
                     msgs.put(JSONObject().put("role", "user").put("content", u))
                     msgs.put(JSONObject().put("role", "assistant").put("content", r))
                 }
@@ -417,7 +445,7 @@ $extraRules
     }
 
     private fun geminiGenerate(wav: ByteArray?, typed: String?, inConv: Boolean): JSONObject {
-        val hist = history.toList().takeLast(6).joinToString("\n") { "المستخدم: ${it.first}\nجارفس: ${it.second}" }
+        val hist = history.toList().takeLast(12).joinToString("\n") { "المستخدم: ${it.first}\nجارفس: ${it.second}" }
         val prompt = "in_conversation = $inConv\nآخر الحوار:\n${hist.ifEmpty { "(لا يوجد)" }}"
         val parts = JSONArray().put(JSONObject().put("text", prompt))
         if (wav != null) {
@@ -624,21 +652,81 @@ $extraRules
         return launch(i)
     }
 
-    /** config.json contacts first, then the phone's own contacts (needs READ_CONTACTS). */
-    private fun resolveNumber(name: String): String? {
-        if (name.isBlank()) return null
-        val cfg = Config.contacts()
-        cfg.optString(name, "").takeIf { it.isNotEmpty() }?.let { return it }
-        for (k in cfg.keys()) if (k.contains(name, true) || name.contains(k, true)) return cfg.getString(k)
-        if (ctx.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
-        return try {
+    /** Arabic-aware normalization: drops diacritics, digits and symbols, unifies alef/ya/ta-marbuta. */
+    private fun normAr(src: String): String {
+        val sb = StringBuilder()
+        for (c0 in src.lowercase()) {
+            val c = when (c0) {
+                '\u0623', '\u0625', '\u0622', '\u0671' -> '\u0627'
+                '\u0649' -> '\u064A'
+                '\u0629' -> '\u0647'
+                '\u0624' -> '\u0648'
+                '\u0626' -> '\u064A'
+                else -> c0
+            }
+            if (c in '\u064B'..'\u065F' || c == '\u0640' || c == '\u0670') continue
+            if (c.isLetter()) sb.append(c) else if (c.isWhitespace() || c == '-' || c == '_') sb.append(' ')
+        }
+        return sb.toString().trim().replace(Regex("\\s+"), " ")
+    }
+
+    private fun loadContacts(): List<Contact> {
+        val now = System.currentTimeMillis()
+        if (now - contactsAt < 60_000 && contactsCache.isNotEmpty()) return contactsCache
+        if (ctx.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return emptyList()
+        val list = ArrayList<Contact>()
+        try {
             ctx.contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
-                arrayOf("%$name%"), null
-            )?.use { c -> if (c.moveToFirst()) c.getString(1) else null }
-        } catch (_: Exception) { null }
+                null, null, null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val n = c.getString(0) ?: continue
+                    val num = c.getString(1) ?: continue
+                    val clean = normAr(n)
+                    if (clean.isNotEmpty()) list.add(Contact(n, clean, num))
+                }
+            }
+        } catch (_: Exception) {}
+        contactsCache = list
+        contactsAt = now
+        return list
+    }
+
+    private fun contactNames(): String {
+        val fromPhone = loadContacts().map { it.clean }.distinct().take(150)
+        val fromCfg = Config.contacts().keys().asSequence().map { normAr(it) }.toList()
+        return (fromCfg + fromPhone).distinct().joinToString("، ").ifEmpty { "(لا يوجد)" }
+    }
+
+    private fun matchScore(q: String, name: String): Int {
+        if (name == q) return 100
+        val words = name.split(" ")
+        if (words.contains(q)) return 80
+        if (name.startsWith(q)) return 70
+        if (name.contains(q)) return 50
+        if (name.length >= 3 && q.contains(name)) return 40
+        return 0
+    }
+
+    /** "ماما" يطابق "ماما 010": config.json أول، وبعدين جهات الاتصال في الموبايل */
+    private fun resolveNumber(name: String): String? {
+        val q = normAr(name)
+        if (q.isEmpty()) return null
+        val cfg = Config.contacts()
+        for (k in cfg.keys()) if (normAr(k) == q) return cfg.getString(k)
+        val best = loadContacts()
+            .map { it to matchScore(q, it.clean) }
+            .filter { it.second > 0 }
+            .sortedWith(compareByDescending<Pair<Contact, Int>> { it.second }.thenBy { it.first.name.length })
+            .firstOrNull()
+        if (best != null) return best.first.number
+        for (k in cfg.keys()) {
+            val nk = normAr(k)
+            if (nk.contains(q) || q.contains(nk)) return cfg.getString(k)
+        }
+        return null
     }
 
     private fun normalizeNumber(raw: String): String {
@@ -676,10 +764,199 @@ $extraRules
         }
     }
 
-    // ------------------------------------------------------------ tts
+    // ------------------------------------------------------------ tts: cloud voice + robot effect, system fallback
+    private class Pcm(val samples: ShortArray, val rate: Int)
+
+    private fun postBytes(url: String, headers: Map<String, String>, body: JSONObject): ByteArray {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 15000
+            conn.readTimeout = 60000
+            conn.setRequestProperty("Content-Type", "application/json")
+            for ((k, v) in headers) conn.setRequestProperty(k, v)
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            val code = conn.responseCode
+            if (code != 200) {
+                val err = try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (_: Exception) { "" }
+                throw HttpException(code, err)
+            }
+            return conn.inputStream.readBytes()
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun bytesToShorts(b: ByteArray): ShortArray {
+        val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
+        val out = ShortArray(b.size / 2)
+        for (i in out.indices) out[i] = bb.getShort(i * 2)
+        return out
+    }
+
+    private fun parseWav(b: ByteArray): Pcm {
+        val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
+        var pos = 12
+        var rate = 24000
+        var ch = 1
+        while (pos + 8 <= b.size) {
+            val id = String(b, pos, 4, Charsets.US_ASCII)
+            var size = bb.getInt(pos + 4)
+            if (id == "fmt ") { ch = bb.getShort(pos + 10).toInt(); rate = bb.getInt(pos + 12) }
+            if (id == "data") {
+                if (size < 0 || pos + 8 + size > b.size) size = b.size - pos - 8
+                val n = size / 2
+                val raw = ShortArray(n) { bb.getShort(pos + 8 + it * 2) }
+                val mono = if (ch == 2) ShortArray(n / 2) { ((raw[it * 2] + raw[it * 2 + 1]) / 2).toShort() } else raw
+                return Pcm(mono, rate)
+            }
+            pos += 8 + size + (size and 1)
+        }
+        throw Exception("bad wav")
+    }
+
+    private fun openAiTts(text: String): Pcm {
+        var last: HttpException? = null
+        for (m in listOf("gpt-4o-mini-tts", "tts-1")) {
+            val body = JSONObject().put("model", m).put("voice", Config.ttsVoice())
+                .put("input", text).put("response_format", "pcm")
+            if (m == "gpt-4o-mini-tts") {
+                body.put("instructions",
+                    "Voice: a calm, deep, precise male AI assistant robot with a subtle synthetic metallic quality, like JARVIS. " +
+                    "Pace: steady and measured. Tone: confident, polished, slightly witty. " +
+                    "If the text is Arabic, speak clear Egyptian-accented Arabic.")
+            }
+            try {
+                val bytes = postBytes("https://api.openai.com/v1/audio/speech",
+                    mapOf("Authorization" to "Bearer ${Keys.openai}"), body)
+                return Pcm(bytesToShorts(bytes), 24000)
+            } catch (e: HttpException) {
+                last = e
+                if (e.code != 400 && e.code != 404) throw e
+            }
+        }
+        throw last ?: Exception("no tts model")
+    }
+
+    private fun splitForTts(text: String, max: Int): List<String> {
+        val parts = ArrayList<String>()
+        var cur = StringBuilder()
+        for (s in text.split(Regex("(?<=[.!?؟،,\\n])\\s*"))) {
+            if (s.isBlank()) continue
+            if (cur.isNotEmpty() && cur.length + s.length + 1 > max) { parts.add(cur.toString().trim()); cur = StringBuilder() }
+            if (s.length > max) s.chunked(max).forEach { parts.add(it) } else cur.append(s).append(' ')
+        }
+        if (cur.isNotBlank()) parts.add(cur.toString().trim())
+        return parts
+    }
+
+    private fun groqTts(text: String): Pcm {
+        val arabic = text.any { it in '\u0600'..'\u06FF' }
+        val model = if (arabic) "canopylabs/orpheus-arabic-saudi" else "canopylabs/orpheus-v1-english"
+        val voice = if (arabic) Config.groqArabicVoice() else "daniel"
+        val all = ArrayList<ShortArray>()
+        var rate = 24000
+        for (chunk in splitForTts(text.take(600), 190)) {
+            val body = JSONObject().put("model", model).put("voice", voice).put("input", chunk)
+                .put("response_format", "wav").put("sample_rate", 24000)
+            val p = parseWav(postBytes("https://api.groq.com/openai/v1/audio/speech",
+                mapOf("Authorization" to "Bearer ${Keys.groq}"), body))
+            rate = p.rate
+            all.add(p.samples)
+        }
+        if (all.isEmpty()) throw Exception("empty tts")
+        val out = ShortArray(all.sumOf { it.size })
+        var off = 0
+        for (a in all) { System.arraycopy(a, 0, out, off, a.size); off += a.size }
+        return Pcm(out, rate)
+    }
+
+    private fun cloudTts(text: String): Pcm? {
+        val order = when (Config.ttsProvider()) {
+            "openai" -> listOf("openai")
+            "groq" -> listOf("groq")
+            else -> listOf("openai", "groq")
+        }
+        for (p in order) {
+            if (p in deadTts) continue
+            try {
+                if (p == "openai" && Keys.openai.isNotBlank()) return openAiTts(text)
+                if (p == "groq" && Keys.groq.isNotBlank()) return groqTts(text)
+            } catch (e: Exception) {
+                deadTts.add(p)
+                val why = if (e is HttpException) "${e.code} ${e.body.take(90)}" else e.javaClass.simpleName
+                Bus.say("err", "صوت $p مش شغال ($why)، هستخدم البديل")
+            }
+        }
+        return null
+    }
+
+    /** ring-modulator + short comb filter = metallic robot timbre, kept intelligible */
+    private fun robotize(p: Pcm, amount: Double): Pcm {
+        val x = p.samples
+        val sr = p.rate
+        val d = max(1, (sr * 0.011).toInt())
+        val ringMix = (0.30 * amount).toFloat()
+        val combGain = (0.40 * amount).toFloat()
+        val y = FloatArray(x.size)
+        val w = (2.0 * Math.PI * 95.0 / sr)
+        for (i in x.indices) {
+            val s = x[i] / 32768f
+            val ring = s * sin(w * i).toFloat()
+            var v = (1f - ringMix) * s + ringMix * ring
+            if (i >= d) v += combGain * y[i - d]
+            y[i] = v
+        }
+        var peak = 0.01f
+        for (v in y) peak = max(peak, abs(v))
+        val g = min(1.8f, 0.92f / peak)
+        val out = ShortArray(y.size) { (y[it] * g * 32767f).toInt().coerceIn(-32768, 32767).toShort() }
+        return Pcm(out, sr)
+    }
+
+    private suspend fun playPcm(p: Pcm) = withContext(Dispatchers.IO) {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+        val fmt = AudioFormat.Builder().setSampleRate(p.rate)
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()
+        val t = AudioTrack.Builder().setAudioAttributes(attrs).setAudioFormat(fmt)
+            .setBufferSizeInBytes(p.samples.size * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC).build()
+        track = t
+        try {
+            t.write(p.samples, 0, p.samples.size)
+            t.play()
+            val total = p.samples.size
+            val deadline = System.currentTimeMillis() + total * 1000L / p.rate + 2500
+            while (t.playState == AudioTrack.PLAYSTATE_PLAYING &&
+                t.playbackHeadPosition < total && System.currentTimeMillis() < deadline) delay(40)
+        } finally {
+            try { t.stop() } catch (_: Exception) {}
+            t.release()
+            track = null
+        }
+    }
+
     private suspend fun speak(text: String) {
         Bus.say("j", text)
         Bus.state("speaking", "SPEAKING")
+        val clean = text.replace(Regex("[*_#`]"), "")
+        if (Config.ttsProvider() != "system") {
+            val pcm = try { withContext(Dispatchers.IO) { cloudTts(clean) } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            if (pcm != null) {
+                val fx = Config.robotFx()
+                playPcm(if (fx > 0.0) robotize(pcm, fx) else pcm)
+                delay(300)
+                return
+            }
+        }
+        systemSpeak(clean)
+    }
+
+    private suspend fun systemSpeak(text: String) {
         val engine = tts
         if (!ttsReady || engine == null) return
         val arabic = text.any { it in '\u0600'..'\u06FF' }
