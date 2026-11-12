@@ -7,6 +7,7 @@ import org.json.JSONObject
 
 object Keys {
     private lateinit var sp: SharedPreferences
+    @Volatile var version = 0
 
     @Synchronized
     fun init(ctx: Context) {
@@ -24,6 +25,7 @@ object Keys {
     fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank()
 
     fun save(json: JSONObject) {
+        version++
         sp.edit()
             .putString("openai", json.optString("gpt").trim())
             .putString("groq", json.optString("groq").trim())

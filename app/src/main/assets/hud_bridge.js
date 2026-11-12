@@ -15,14 +15,14 @@
   if (panel && !$("kGem")) {
     const div = document.createElement("div");
     div.className = "ig";
-    div.innerHTML = '<label>Gemini Key (صوت أفضل - مجاني)</label><input type="password" id="kGem" placeholder="AIza...">';
+    div.innerHTML = '<label>Gemini Key (صوت أفضل - مجاني)</label><input type="text" id="kGem" autocomplete="off" spellcheck="false" placeholder="AIza...">';
     panel.insertBefore(div, $("saveBtn"));
     $("kGem").value = localStorage.getItem("k_gem") || "";
   }
   if (panel && !$("kFish")) {
     const d2 = document.createElement("div");
     d2.className = "ig";
-    d2.innerHTML = '<label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key">' +
+    d2.innerHTML = '<label>Fish Audio Key (صوت Jarvis MCU)</label><input type="text" id="kFish" autocomplete="off" spellcheck="false" placeholder="Fish API key">' +
                    '<label style="margin-top:6px">Fish Voice ID (من رابط الصوت fish.audio/m/...)</label><input type="text" id="kFishV" placeholder="مثال: 9f79a93aa44b...">';
     panel.insertBefore(d2, $("saveBtn"));
     $("kFish").value = localStorage.getItem("k_fish") || "";
@@ -85,6 +85,15 @@
     pushKeys();
   };
   pushKeys();
+
+  // أي مفتاح (Gemini / Groq / OpenAI) يخلي الحالة "Ready" ويقفل اللوحة
+  window.checkKeys = function () {
+    const c = [localStorage.getItem("k_gem"), localStorage.getItem("k_gpt"), localStorage.getItem("k_groq")].filter(Boolean).length;
+    const p = $("setupPanel"); if (p) p.style.display = c ? "none" : "block";
+    if ($("vAi")) $("vAi").textContent = c ? c + " Models Ready" : "Missing";
+    if ($("rAi")) $("rAi").className = c ? "row on" : "row";
+  };
+  window.checkKeys();
 
   window.jarvisEvent = function (m) {
     if (m.type === "say" && window.addLog) addLog(m.c, m.t);

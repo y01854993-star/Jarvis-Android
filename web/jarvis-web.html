@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J.A.R.V.I.S</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2728%27 fill=%27%23041a45%27 stroke=%27%2322d3ee%27 stroke-width=%274%27/%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2710%27 fill=%27%2322d3ee%27/%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#030a16;--panel:rgba(8,28,58,.55);--line:#12365f;--cy:#22d3ee;--bl:#1e6fe0;--tx:#cfe6ff;--mu:#6f93b8;--ok:#34d399;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:var(--tx);font-family:Rajdhani,sans-serif;font-size:18px;padding-top:env(safe-area-inset-top);padding-bottom:100px;background:repeating-linear-gradient(0deg,rgba(34,211,238,.05) 0 1px,transparent 1px 3px),radial-gradient(ellipse at 50% 30%,#0a2a55 0,#04122a 55%,var(--bg) 100%);background-attachment:fixed;overflow-x:hidden}
+main{max-width:560px;margin:0 auto;padding:14px 22px 30px}
+header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:10px;gap:5px}
+h1{margin:0;font:700 24px Orbitron,sans-serif;letter-spacing:.15em;color:var(--cy);text-shadow:0 0 14px var(--cy);flex-shrink:0}
+#clock{font:500 12px Orbitron,sans-serif;color:var(--cy);white-space:nowrap;margin-left:auto}
+#langBtn{background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 8px;font-size:12px;font-family:Orbitron;cursor:pointer;margin-inline-end:5px;flex-shrink:0}
+#hud{width:100%;display:block;margin:14px 0;cursor:pointer;border-radius:50%;transition:transform .2s}
+#hud:active{transform:scale(0.98)}
+.sp{transform-box:fill-box;transform-origin:center;animation:spin 40s linear infinite}
+.sp2{animation-duration:26s;animation-direction:reverse}.sp3{animation-duration:90s}
+@keyframes spin{to{transform:rotate(360deg)}} @keyframes beat{50%{transform:scale(1.12)}}
+#core{transform-box:fill-box;transform-origin:center}
+body.listening #core{animation:beat 1.8s ease-in-out infinite}
+body.thinking .sp{animation-duration:6s}
+body.speaking #core{animation:beat .5s ease-in-out infinite}
+body.speaking .glow{fill:#34d399}
+#state{text-align:center;font:500 14px Orbitron,sans-serif;letter-spacing:.3em;color:var(--cy);margin-bottom:6px}
+#micNote{text-align:center;font-size:14px;color:var(--mu);margin-bottom:12px;min-height:1.2em}
+.panel{background:var(--panel);border:1px solid var(--line);padding:12px 16px;margin-bottom:14px;clip-path:polygon(0 0,calc(100% - 18px) 0,100% 18px,100% 100%,0 100%)}
+h2{margin:0 0 10px;font:700 16px Orbitron,sans-serif;color:var(--cy);border-bottom:1px dashed rgba(34,211,238,.2);padding-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+#log{height:130px;overflow-y:auto;color:var(--mu);line-height:1.4;font-size:16px}
+#log div{margin-bottom:6px;padding-bottom:6px;border-bottom:1px dashed rgba(255,255,255,.05)}
+#log .j{color:var(--cy)} #log .u{color:var(--tx)} #log .err{color:var(--bad)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:16px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--bad);margin-inline-start:8px}
+.on .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)} .on span:last-child{color:var(--ok)}
+.m{margin:8px 0 4px;display:flex;justify-content:space-between;font-size:14px;color:var(--mu)}
+.m span:last-child{color:var(--tx);font-family:Orbitron,sans-serif;font-size:13px}
+.bar{height:6px;background:#0b2447;border-radius:3px;overflow:hidden;margin-bottom:8px}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--bl),var(--cy));transition:width .5s}
+.bottom-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(3,10,22,.95);backdrop-filter:blur(10px);border-top:1px solid var(--line);padding:12px 16px calc(12px + env(safe-area-inset-bottom));z-index:100;display:flex;gap:8px;max-width:560px;margin:0 auto}
+input,button{font:inherit;color:var(--tx);background:rgba(8,28,58,.8);border:1px solid var(--line);border-radius:24px;outline:none}
+input{flex:1;min-width:0;padding:12px 16px}
+input:focus{border-color:var(--cy)}
+button{cursor:pointer;font-family:Orbitron,sans-serif;font-size:13px;padding:0 20px;min-height:44px;transition:0.2s}
+button:active{transform:scale(.95)}
+#send{background:var(--cy);color:#000;border-color:var(--cy);font-weight:bold}
+.ig{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.ig label{font-size:12px;color:var(--mu)}
+.ig input{border-radius:8px;padding:10px;font-size:14px;background:#06101f}
+#saveBtn{background:var(--ok);color:#000;border:none;border-radius:8px;width:100%;padding:12px;font-weight:bold;margin-top:8px}
+
+/* ===== arc-reactor look ===== */
+body{background:
+  radial-gradient(ellipse at 50% 26%,rgba(0,140,255,.32) 0,rgba(0,70,170,.18) 38%,transparent 70%),
+  repeating-linear-gradient(90deg,rgba(34,211,238,.06) 0 1px,transparent 1px 68px),
+  repeating-linear-gradient(0deg,rgba(34,211,238,.045) 0 1px,transparent 1px 3px),
+  linear-gradient(#04153a,#020a1c) !important;background-attachment:fixed !important}
+#hud{overflow:visible;width:100%;max-width:560px;margin:6px auto 10px;border-radius:0}
+.spin{transform-box:view-box;transform-origin:200px 200px;animation:spin var(--d,60s) linear infinite}
+.spin.rev{animation-direction:reverse}
+body.listening .spin{animation-duration:calc(var(--d,60s) * .5)}
+body.thinking .spin{animation-duration:calc(var(--d,60s) * .1)}
+#t1 line{stroke-width:1.1}
+#t2 line{stroke-width:3.3;stroke-linecap:round}
+.glow{animation:glowp 3.2s ease-in-out infinite}
+@keyframes glowp{50%{opacity:.78}}
+body.listening .glow{filter:hue-rotate(-35deg)}
+body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div style="display:flex;align-items:center">
+    <button id="langBtn" onclick="toggleLang()">AR</button>
+    <h1>J.A.R.V.I.S</h1>
+  </div>
+  <div id="clock">--:--:--</div>
+</header>
+
+<svg id="hud" viewBox="-20 -20 440 440">
+<defs>
+<radialGradient id="g"><stop offset="0" stop-color="#fff"/><stop offset=".28" stop-color="#5ff0ff"/><stop offset=".6" stop-color="#1ab8ff" stop-opacity=".55"/><stop offset="1" stop-color="#0a7cff" stop-opacity="0"/></radialGradient>
+<radialGradient id="halo"><stop offset="0" stop-color="#0a5fd8" stop-opacity=".55"/><stop offset=".6" stop-color="#0a3d9a" stop-opacity=".25"/><stop offset="1" stop-color="#041a4a" stop-opacity="0"/></radialGradient>
+</defs>
+<circle cx="200" cy="200" r="196" fill="url(#halo)"/>
+<g fill="none" stroke-linecap="round">
+<g class="spin" style="--d:140s" stroke="#22d3ee" stroke-opacity=".5"><g id="t1"></g></g>
+<g class="spin rev" style="--d:90s" id="t3" stroke="#5de0ff"></g>
+<g class="spin" style="--d:70s" stroke="#3b9bff" stroke-width="7"><path d="M55.4 116.5 A167 167 0 0 1 145.6 42.1"/><path d="M211.6 33.4 A167 167 0 0 1 353.7 134.7"/><path d="M366.9 194.2 A167 167 0 0 1 336.8 295.8"/><path d="M275.8 348.8 A167 167 0 0 1 116.5 344.6"/><path d="M68.4 302.8 A167 167 0 0 1 38.0 159.6"/></g>
+<g class="spin rev" style="--d:46s" stroke="#22d3ee" stroke-width="2"><circle cx="200" cy="200" r="147" stroke-dasharray="95 9 16 9 38 9 12 9 60 9"/></g>
+<circle cx="200" cy="200" r="131" stroke="#22d3ee" stroke-opacity=".55" stroke-dasharray="1 4"/>
+<g class="spin" style="--d:150s" stroke="#22d3ee"><g id="t2"></g></g>
+<circle cx="200" cy="200" r="100" stroke="#22d3ee" stroke-opacity=".45"/>
+<circle cx="200" cy="200" r="68" stroke="#22d3ee" stroke-opacity=".35"/>
+<circle cx="200" cy="200" r="38" stroke="#22d3ee" stroke-opacity=".5"/>
+<g class="spin" style="--d:9s"><path d="M200 200 L130.5 128.1 A100 100 0 0 0 101.5 182.6 Z" fill="rgba(34,211,238,.13)" stroke="none"/><line x1="200" y1="200" x2="130.5" y2="128.1" stroke="#22d3ee" stroke-opacity=".8" stroke-width="1.3"/></g>
+<g id="dots" class="spin rev" style="--d:240s" stroke="none"></g>
+<circle class="glow" cx="200" cy="200" r="54" fill="url(#g)" stroke="none"/>
+<polygon id="core" points="231.9,188.4 226.0,221.9 194.1,233.5 168.1,211.6 174.0,178.1 205.9,166.5" stroke="#8ff6ff" stroke-width="1.8" fill="rgba(34,211,238,.2)"/>
+<circle cx="200" cy="200" r="6" fill="#fff" stroke="none"/>
+</g></svg>
+<script>
+(function(){
+  const NS="http://www.w3.org/2000/svg";
+  let s=11;
+  const rnd=()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
+  const mk=(p,tag,at)=>{const e=document.createElementNS(NS,tag);for(const k in at)e.setAttribute(k,at[k]);p.appendChild(e)};
+  const dots=document.getElementById("dots");
+  for(let i=0;i<72;i++){
+    const a=rnd()*6.283,r=40+rnd()*108;
+    mk(dots,"circle",{cx:200+r*Math.cos(a),cy:200+r*Math.sin(a),r:(0.7+rnd()*2).toFixed(2),fill:rnd()<.2?"#9ff7ff":"#22d3ee","fill-opacity":(.35+.65*rnd()).toFixed(2)});
+  }
+  const t3=document.getElementById("t3");
+  for(let i=0;i<150;i++){
+    const a=i*6.283/150,big=rnd()<.1,r1=big?196:200,r2=big?(210+rnd()*6):(204+rnd()*4);
+    mk(t3,"line",{x1:200+r1*Math.cos(a),y1:200+r1*Math.sin(a),x2:200+r2*Math.cos(a),y2:200+r2*Math.sin(a),"stroke-opacity":big?.9:.28,"stroke-width":big?1.8:1});
+  }
+})();
+</script>
+
+<div id="state">TAP JARVIS TO SPEAK</div>
+<div id="micNote" aria-live="polite"></div>
+
+<div class="panel" id="setupPanel">
+  <h2>AI CONFIGURATION</h2>
+  <div class="ig"><label>اسمك</label><input type="text" id="kName" placeholder="مثلاً: يا توني"></div>
+  <div class="ig"><label>OpenAI (GPT) Key</label><input type="password" id="kGpt" placeholder="sk-..."></div>
+  <div class="ig"><label>Groq Key (مجاني)</label><input type="password" id="kGroq" placeholder="gsk_..."></div>
+  <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
+</div>
+
+<div class="panel">
+<h2>COMMAND LOG</h2>
+<div id="log" dir="auto" aria-live="polite"></div>
+<div class="row" id="rAi" style="border:none"><span>AI ENGINE</span><span><b id="vAi">checking</b><i class="dot"></i></span></div>
+</div>
+
+<div class="panel">
+<h2>SYSTEM</h2>
+<div id="sysContainer"></div>
+</div>
+</main>
+
+<div class="bottom-bar">
+  <input id="txt" placeholder="Type here..." aria-label="رسالة">
+  <button id="send" type="button">SEND</button>
+</div>
+
+<script>
+const $=id=>document.getElementById(id), NS="http://www.w3.org/2000/svg";
+let keys={ gpt:localStorage.getItem("k_gpt")||"", groq:localStorage.getItem("k_groq")||"" };
+let userName=localStorage.getItem("jv_name")||"يا فندم";
+let listening=false,busy=false,voices=[], currentLang="ar-EG";
+
+// 1. Build UI & Stats
+(function(){
+  const mk=(p,a,b,c,d)=>{const l=document.createElementNS(NS,"line");l.setAttribute("x1",a);l.setAttribute("y1",b);l.setAttribute("x2",c);l.setAttribute("y2",d);p.appendChild(l)};
+  for(let i=0;i<120;i++){const a=i*Math.PI/60,co=Math.cos(a),s=Math.sin(a);mk($("t1"),200+192*co,200+192*s,200+(i%5?196:200)*co,200+(i%5?196:200)*s)}
+  for(let i=0;i<72;i++){const a=i*Math.PI/36,co=Math.cos(a),s=Math.sin(a);mk($("t2"),200+112*co,200+112*s,200+(i%2?118:124)*co,200+(i%2?118:124)*s)}
+  ["fps","mem","net","bat"].forEach(id=>$("sysContainer").innerHTML+=`<div class="m"><span>${id.toUpperCase()}</span><span id="v_${id}">--</span></div><div class="bar"><i id="b_${id}"></i></div>`);
+})();
+
+// 2. Clock & Stats Loop
+setInterval(()=>{$("clock").textContent=new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true})},1000);
+let frames=0; requestAnimationFrame(function loop(){frames++;requestAnimationFrame(loop)});
+setInterval(()=>{
+  $("v_fps").textContent=frames+" fps"; $("b_fps").style.width=Math.min(100,frames/1.2)+"%"; frames=0;
+  if(performance.memory){$("v_mem").textContent=Math.round(performance.memory.usedJSHeapSize/1048576)+" MB";$("b_mem").style.width=(performance.memory.usedJSHeapSize/performance.memory.jsHeapSizeLimit*100)+"%"}
+  if(navigator.connection){$("v_net").textContent=navigator.connection.downlink+" Mbps";$("b_net").style.width=Math.min(100,navigator.connection.downlink*2)+"%"}
+},1000);
+if(navigator.getBattery)navigator.getBattery().then(b=>{const u=()=>{$("v_bat").textContent=Math.round(b.level*100)+"%";$("b_bat").style.width=(b.level*100)+"%";};u();b.onlevelchange=u});
+
+// 3. Language Toggle
+function toggleLang(){
+  currentLang = (currentLang === "ar-EG") ? "en-US" : "ar-EG";
+  $("langBtn").textContent = (currentLang === "ar-EG") ? "AR" : "EN";
+  $("micNote").textContent = currentLang === "ar-EG" ? "اللغة: عربي" : "Language: English";
+  if(listening){ stopRec(); }
+}
+$("langBtn").textContent = "AR";
+
+// 4. Human-like Voice Logic
+if("speechSynthesis" in window){ speechSynthesis.onvoiceschanged=()=>voices=speechSynthesis.getVoices(); }
+function speak(text){
+  if(!("speechSynthesis" in window))return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  const isArabic = /[\u0600-\u06FF]/.test(text);
+  
+  let preferred = isArabic 
+    ? ['Majed', 'Maged', 'Naayf', 'Shakir', 'Google العربية']
+    : ['Daniel', 'Arthur', 'George', 'Google UK English Male'];
+    
+  let bestVoice = null;
+  for(let name of preferred) {
+    bestVoice = voices.find(v => v.name.includes(name));
+    if(bestVoice) break;
+  }
+  if(!bestVoice) bestVoice = voices.find(v => v.lang.startsWith(isArabic ? "ar" : "en"));
+
+  if(bestVoice) u.voice = bestVoice;
+  u.pitch = 0.9;
+  u.rate = 1.0;
+  speechSynthesis.speak(u);
+}
+
+// 5. UI Helpers
+function setState(c,t){document.body.className=c;$("state").textContent=t}
+function addLog(c,t){$("log").innerHTML+=`<div class="${c}">› ${t}</div>`;$("log").scrollTop=$("log").scrollHeight}
+
+// 6. API Logic & Personality
+function saveKeys(){
+  keys.gpt=$("kGpt").value.trim(); 
+  keys.groq=$("kGroq").value.trim();
+  userName=$("kName").value.trim() || "يا فندم";
+  localStorage.setItem("k_gpt",keys.gpt); localStorage.setItem("k_groq",keys.groq); localStorage.setItem("jv_name",userName);
+  checkKeys(); addLog("j",`Keys Saved. Hello ${userName}.`);
+}
+function checkKeys(){
+  const c=Object.values(keys).filter(k=>k).length;
+  $("setupPanel").style.display=c?"none":"block";
+  $("vAi").textContent=c?`${c} Models Ready`:"Missing";
+  $("rAi").className=c?"row on":"row";
+}
+$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kName").value=userName; checkKeys();
+
+function getSystemPrompt() {
+  return `أنت J.A.R.V.I.S. مساعد شخصي ذكي جداً. المستخدم هو "${userName}". بتناديه دايماً "${userName}" أو "يا فندم".
+شخصيتك: رسمي، خفيف الدم، واثق. رد بنفس لغة المستخدم.
+افهم الحروف الغلط. لو طلب فتح تطبيق، حدد اسمه بالإنجليزي في "app_name".
+ترد بـ JSON فقط:
+{"reply":"الرد القصير","action":"open_app|search_youtube|whatsapp|call|none","app_name":"...","query":"...","contact":"...","message":"..."}`;
+}
+
+async function fetchAI(provider, prompt){
+  if(!keys[provider]) throw new Error("Missing key");
+  let url, headers, body;
+  const sys = getSystemPrompt();
+  
+  if(provider === "gpt"){
+    url = "https://api.openai.com/v1/chat/completions";
+    headers = {"Authorization":`Bearer ${keys.gpt}`,"Content-Type":"application/json"};
+    body = {model:"gpt-4o",response_format:{type:"json_object"},messages:[{role:"system",content:sys},{role:"user",content:prompt}]};
+  } 
+  else if(provider === "groq"){
+    url = "https://api.groq.com/openai/v1/chat/completions";
+    headers = {"Authorization":`Bearer ${keys.groq}`,"Content-Type":"application/json"};
+    body = {model:"llama-3.3-70b-versatile",response_format:{type:"json_object"},messages:[{role:"system",content:sys},{role:"user",content:prompt}]};
+  }
+  const res = await fetch(url, {method:"POST",headers,body:JSON.stringify(body)});
+  const data = await res.json();
+  if(!res.ok) throw new Error(provider + " Error");
+  return {text:data.choices[0].message.content, source:provider.toUpperCase()};
+}
+
+async function askAI(prompt){
+  const available = [];
+  if(keys.gpt) available.push(fetchAI("gpt",prompt).catch(e => { addLog("err", "GPT: "+e.message); return null; }));
+  if(keys.groq) available.push(fetchAI("groq",prompt).catch(e => { addLog("err", "Groq: "+e.message); return null; }));
+  const results = (await Promise.all(available)).filter(r => r !== null);
+  if(!results.length) throw new Error("كل الموديلات فشلت.");
+  if(results.length === 1) return parseRes(results[0]);
+  
+  let combined=""; results.forEach(r=>combined+=`\n[${r.source}]: ${r.text}`);
+  let judge = keys.gpt ? "gpt" : "groq";
+  try{
+    const final=await fetchAI(judge,`سؤال: ${prompt}\nإجابات:${combined}\nادمجهم في JSON.`,`أنت JARVIS. دمج في {"reply":"...","action":"...","app_name":"...","query":"...","contact":"...","message":"..."}`);
+    let p=parseRes(final); p.source="Ensemble"; return p;
+  }catch(e){ return parseRes(results[0]); }
+}
+
+function parseRes(r){
+  let t=r.text.replace(/^```(?:json)?/i,"").replace(/```$/,"").trim(), p={reply:t,action:"none"};
+  try{p=JSON.parse(t)}catch(e){}
+  p.source=r.source; return p;
+}
+
+// 7. App Executor
+function executeAction(r){
+  const app=r.app_name ? r.app_name.toLowerCase().trim() : "";
+  const query=encodeURIComponent(r.query||"");
+  const msg=encodeURIComponent(r.message||"");
+  
+  if(r.action==="search_youtube"){
+    addLog("j",`⚡ بحث يوتيوب: ${r.query}`);
+    window.location.href = `vnd.youtube://results?search_query=${query}`;
+  }
+  else if(r.action==="whatsapp"){
+    addLog("j",`💬 واتساب: ${r.contact || ""}`);
+    window.location.href = `whatsapp://send?text=${msg}`; 
+  }
+  else if(r.action==="call"){
+    addLog("j",`📞 اتصال: ${r.contact}`);
+    window.location.href = `tel:`;
+  }
+  else if(r.action==="open_app"){
+    const links={
+      "youtube":"vnd.youtube://", "whatsapp":"whatsapp://", "facebook":"fb://", 
+      "instagram":"instagram://app", "twitter":"twitter://", "telegram":"tg://", 
+      "spotify":"spotify://", "netflix":"nflx://", "tiktok":"snssdk1128://", 
+      "maps":"geo:0,0?q=", "camera":"intent://#Intent;action=android.media.action.IMAGE_CAPTURE;end", 
+      "phone":"tel:", "messages":"sms:", "settings":"intent://#Intent;action=android.settings.SETTINGS;end", 
+      "chrome":"googlechrome://", "calculator":"intent://#Intent;action=android.intent.action.CALCULATOR;end"
+    };
+    if(links[app]){ addLog("j",`⚡ فتح ${app}`); window.location.href=links[app]; }
+  }
+}
+
+// 8. Main Loop
+async function handle(t){
+  if(!t||busy)return; busy=true; setState("thinking","THINKING"); addLog("u",t);
+  try{
+    const r=await askAI(t);
+    if(r.reply){ addLog("j",`[${r.source}] ${r.reply}`); setState("speaking","SPEAKING"); await new Promise(res=>{speak(r.reply);setTimeout(res,2500)}); }
+    executeAction(r);
+  }catch(e){ addLog("err","Error: "+e.message); }
+  busy=false; setState("","TAP JARVIS TO SPEAK");
+}
+
+// 9. Single-Shot Mic Logic
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition; let rec=null;
+function startRec(){
+  if(!SR||busy)return;
+  try{
+    rec=new SR(); rec.lang=currentLang; rec.interimResults=false; rec.maxAlternatives=1;
+    rec.onstart=()=>{$("micNote").textContent="🎤 يستمع...";$("micNote").className="ok"};
+    rec.onresult=e=>{
+      const text = e.results[0][0].transcript;
+      $("txt").value = text;
+      stopRec(); 
+      handle(text); 
+    };
+    rec.onerror=e=>{ addLog("err","Mic Error: "+e.error); stopRec(); };
+    rec.onend=()=>{ stopRec(); };
+    rec.start();
+  }catch(e){ stopRec(); }
+}
+function stopRec(){
+  if(rec){ try{rec.abort()}catch(e){} rec=null; }
+  listening=false;
+  if(!busy) setState("","TAP JARVIS TO SPEAK");
+}
+function toggle(){
+  if(!keys.gpt && !keys.groq)return alert("حط مفتاح واحد على الأقل");
+  if(listening){ stopRec(); }
+  else { listening=true; setState("listening","LISTENING"); startRec(); }
+}
+$("hud").onclick=toggle; 
+$("send").onclick=()=>{const v=$("txt").value;$("txt").value="";handle(v)};
+$("txt").onkeydown=e=>{if(e.key==="Enter")$("send").click()};
+addLog("j","JARVIS online. Systems ready.");
+</script>
+<script>
+/* Jarvis web engine: runs the HUD page in a desktop/phone browser (Chrome recommended). */
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const LS = { get: (k) => localStorage.getItem(k) || "", set: (k, v) => localStorage.setItem(k, v) };
+  const IDLE = "TAP JARVIS TO SPEAK";
+
+  function K() {
+    let n = LS.get("jv_name");
+    if (!n || n === "يا فندم") n = "Boss";
+    return { gem: LS.get("k_gem"), gpt: LS.get("k_gpt"), groq: LS.get("k_groq"), fish: LS.get("k_fish"), fishv: LS.get("k_fishv"), name: n };
+  }
+  const hasKey = () => { const k = K(); return !!(k.gem || k.gpt || k.groq); };
+  const log = (c, t) => { if (window.addLog) window.addLog(c, t); };
+  const state = (c, t) => { if (window.setState) window.setState(c, t); };
+
+  // ------------------------------------------------------------ settings panel (keys)
+  const panel = $("setupPanel");
+  function field(id, label, ph, type) {
+    const d = document.createElement("div");
+    d.className = "ig";
+    d.innerHTML = '<label>' + label + '</label><input type="' + (type || "text") + '" id="' + id + '" placeholder="' + ph + '" autocomplete="off" spellcheck="false">';
+    panel.insertBefore(d, $("saveBtn"));
+  }
+  if (panel && !$("kGem")) {
+    field("kGem", "Gemini Key (مجاني - يكفي لكل حاجة)", "AIza...");
+    field("kFish", "Fish Audio Key (اختياري - صوت Jarvis MCU)", "Fish API key");
+    field("kFishV", "Fish Voice ID (من رابط fish.audio/m/...)", "voice id");
+  }
+  const setv = (id, v) => { const e = $(id); if (e) e.value = v; };
+  setv("kGem", LS.get("k_gem")); setv("kFish", LS.get("k_fish")); setv("kFishV", LS.get("k_fishv"));
+  setv("kGpt", LS.get("k_gpt")); setv("kGroq", LS.get("k_groq")); setv("kName", K().name);
+
+  const langB = $("langBtn");
+  if (langB && !$("keyBtn")) {
+    const kb = document.createElement("button");
+    kb.id = "keyBtn"; kb.textContent = "⚙";
+    kb.setAttribute("style", "background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 9px;font-size:14px;font-family:Orbitron;cursor:pointer;margin-inline-end:5px;flex-shrink:0");
+    kb.onclick = () => {
+      const open = panel.style.display === "none";
+      panel.style.display = open ? "block" : "none";
+      if (open) panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+    langB.parentNode.insertBefore(kb, langB.nextSibling);
+  }
+  if (panel && !$("resetKeys")) {
+    const rb = document.createElement("button");
+    rb.id = "resetKeys"; rb.textContent = "RESET ALL KEYS";
+    rb.setAttribute("style", "background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron;font-size:12px;cursor:pointer");
+    rb.onclick = () => {
+      ["k_gpt", "k_groq", "k_gem", "k_fish", "k_fishv"].forEach((k) => localStorage.removeItem(k));
+      ["kGpt", "kGroq", "kGem", "kFish", "kFishV"].forEach((i) => setv(i, ""));
+      if (typeof keys !== "undefined") { keys.gpt = ""; keys.groq = ""; }
+      clearBad(); window.checkKeys(); log("j", "All keys cleared.");
+    };
+    panel.appendChild(rb);
+  }
+  window.checkKeys = function () {
+    const k = K();
+    const c = [k.gem, k.gpt, k.groq].filter(Boolean).length;
+    if (panel) panel.style.display = c ? "none" : "block";
+    if ($("vAi")) $("vAi").textContent = c ? c + " Models Ready" : "Missing";
+    if ($("rAi")) $("rAi").className = c ? "row on" : "row";
+  };
+  window.saveKeys = function () {
+    const val = (id) => ($(id) ? $(id).value.trim() : "");
+    LS.set("k_gpt", val("kGpt")); LS.set("k_groq", val("kGroq")); LS.set("k_gem", val("kGem"));
+    LS.set("k_fish", val("kFish")); LS.set("k_fishv", val("kFishV"));
+    LS.set("jv_name", val("kName") || "Boss");
+    if (typeof keys !== "undefined") { keys.gpt = val("kGpt"); keys.groq = val("kGroq"); }
+    clearBad(); window.checkKeys(); log("j", "Keys saved. Welcome " + K().name + ".");
+  };
+  window.checkKeys();
+
+  // ------------------------------------------------------------ provider health (skip dead keys)
+  const bad = {};
+  const isBad = (p) => bad[p] && Date.now() - bad[p] < 600000;
+  function markBad(p, e) {
+    if (e && (e.status === 401 || e.status === 402 || e.status === 403 ||
+      (e.status === 429 && /credit|quota|billing/i.test(e.body || "")))) bad[p] = Date.now();
+  }
+  function clearBad() { for (const k in bad) delete bad[k]; }
+  function why(e) {
+    if (e.status === 429 && /credit|quota|billing/i.test(e.body || "")) return "الرصيد خلص";
+    if (e.status === 429) return "وصلت حد الاستخدام";
+    if (e.status === 401 || e.status === 403) return "المفتاح غلط";
+    if (e.status) return "خطأ " + e.status;
+    return "مفيش اتصال";
+  }
+  async function post(url, headers, body, raw) {
+    const r = await fetch(url, { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, headers), body: JSON.stringify(body) });
+    if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; e.body = await r.text().catch(() => ""); throw e; }
+    return r;
+  }
+
+  // ------------------------------------------------------------ memory / history
+  const history = [];
+  const mem = () => { try { return JSON.parse(LS.get("jv_mem") || "[]"); } catch (e) { return []; } };
+  function addMem(f) {
+    f = (f || "").trim(); if (!f) return;
+    const m = mem(); if (m.some((x) => x.toLowerCase() === f.toLowerCase())) return;
+    m.push(f); while (m.length > 40) m.shift(); LS.set("jv_mem", JSON.stringify(m));
+  }
+  function pushHist(u, r) { history.push({ u, r }); while (history.length > 16) history.shift(); }
+
+  // ------------------------------------------------------------ text helpers
+  function normAr(s) {
+    let o = "";
+    for (const ch of (s || "").toLowerCase()) {
+      let c = ch;
+      if ("أإآٱ".includes(c)) c = "ا"; else if (c === "ى") c = "ي"; else if (c === "ة") c = "ه"; else if (c === "ؤ") c = "و"; else if (c === "ئ") c = "ي";
+      if (/[\u064B-\u065F\u0640\u0670]/.test(c)) continue;
+      if (/\p{L}/u.test(c)) o += c; else if (/\s|-|_/.test(c)) o += " ";
+    }
+    return o.trim().replace(/\s+/g, " ");
+  }
+  function langNote(t) {
+    let ar = 0, lat = 0;
+    for (const c of t) { if (c >= "\u0600" && c <= "\u06FF") ar++; else if (/[a-zA-Z]/.test(c)) lat++; }
+    if (ar > 0 && ar >= lat) return "اللغة: عربي مصري. رد (reply و speech) بالعربي.";
+    if (lat > 0) return "Language: English. Reply (reply and speech) in English only.";
+    return "";
+  }
+  function isNoThanks(t) {
+    const s = normAr(t); if (!s) return false;
+    const strong = ["no thanks", "no thank you", "nothing else", "thats all", "that is all", "im good", "nope", "لا شكرا", "لا مفيش", "مفيش حاجه", "كفايه", "خلاص", "مش عايز", "مش محتاج", "لا يا"];
+    if (strong.some((x) => s.includes(x))) return true;
+    const w = s.split(" ");
+    return w.length <= 2 && w.some((x) => ["no", "nope", "thanks", "thx", "لا", "شكرا"].includes(x));
+  }
+  function isYes(t) {
+    const w = normAr(t).split(" ");
+    if (w.some((x) => ["no", "nope", "cancel", "stop", "لا", "الغي", "بلاش", "متبعتش", "وقف"].includes(x))) return false;
+    return w.some((x) => ["yes", "yeah", "yep", "sure", "ok", "okay", "send", "go", "ايوه", "ايوا", "اه", "نعم", "تمام", "ابعت", "ارسل", "اوك", "ماشي", "طبعا", "يلا", "اكيد"].includes(x));
+  }
+  function parseLoose(t) {
+    const s = (t || "").trim().replace(/^```json/, "").replace(/^```/, "").replace(/```$/, "").trim();
+    try { return JSON.parse(s); } catch (e) { return { reply: s, actions: [] }; }
+  }
+
+  // ------------------------------------------------------------ brain
+  function sysPrompt(userText) {
+    const k = K();
+    const now = new Date().toLocaleString("ar-EG", { dateStyle: "full", timeStyle: "short" });
+    const facts = mem().map((f) => "- " + f).join("\n") || "(لسه مفيش)";
+    return 'أنت J.A.R.V.I.S مساعد شخصي ذكي جدا شغال على متصفح اللابتوب. بتناديه دايما "' + k.name + '" بالإنجليزي زي ما هي (مش في كل جملة).\n' +
+      'شخصيتك: رسمي، خفيف الدم، واثق، ومباشر.\n' +
+      'قاعدة اللغة (مهمة جدا): رد دايما بنفس لغة آخر جملة قالها المستخدم. لو كلمك عربي رد بالعامية المصرية، ولو كلمك English رد English بس.\n' +
+      'الكلام جاي من تسجيل صوتي، فصحّح الأسماء والحروف الغلط من السياق.\n\n' +
+      'السياق دلوقتي:\n- الوقت: ' + now + '\n- حاجات عارفها عن المستخدم:\n' + facts + '\n\n' +
+      'ارجع JSON فقط بالشكل ده:\n{"thought":"تحليل قصير لنية المستخدم","reply":"...","speech":"...","actions":[{"type":"..."}],"remember":"","done":false}\n\n' +
+      'الأوامر الممكنة في actions (ممكن أكتر من واحد بالترتيب):\n' +
+      '- {"type":"open_url","url":"https://..."}: فتح أي موقع\n' +
+      '- {"type":"web_search","query":"..."}\n' +
+      '- {"type":"youtube_search","query":"..."}\n' +
+      '- {"type":"navigate","place":"..."}: خريطة جوجل\n' +
+      '- {"type":"whatsapp","phone":"رقم دولي من غير + (اختياري)","message":"..."}: واتساب ويب\n' +
+      '- {"type":"email","to":"...","subject":"...","body":"..."}\n' +
+      '- {"type":"timer","seconds":N,"label":"..."}\n' +
+      '- {"type":"copy","text":"..."}: نسخ نص للحافظة\n' +
+      '- {"type":"create_project","project_prompt":"..."}: لما يطلب موقع أو تطبيق، وصف مفصل بالإنجليزي، بيفتح لوفابل\n\n' +
+      'قواعد:\n' +
+      '- للأوامر: reply قصير. للأسئلة والشرح: جاوب بعمق ووضوح (من 4 لـ 8 جمل) من غير رموز أو تنسيق لأنها هتتقال بصوت.\n' +
+      '- speech: نفس reply بالظبط (نفس اللغة) بس معدّل للنطق السليم: الأرقام والتواريخ بالحروف، تشكيل خفيف للعربي، من غير رموز أو روابط.\n' +
+      '- لو محتاج معلومة حديثة (أخبار، طقس، أسعار) استخدم web_search وقول إنك فتحت البحث.\n' +
+      '- لو الطلب مش واضح اسأل سؤال واحد قصير.\n' +
+      '- remember: حط معلومة قصيرة لو المستخدم قال حاجة عن نفسه تستحق تفتكرها، غير كده "".\n' +
+      '- done: true بس لو المستخدم قال إنه خلص (لا شكرا، كفاية، خلاص).\n' +
+      '- متخترعش حاجة، ولو معرفتش قول معرفش.';
+  }
+
+  async function geminiCall(body) {
+    const k = K(); let last;
+    for (const m of ["gemini-2.5-flash", "gemini-flash-latest"]) {
+      try {
+        const r = await post("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent", { "x-goog-api-key": k.gem }, body);
+        return await r.json();
+      } catch (e) { last = e; if (e.status !== 400 && e.status !== 404) throw e; }
+    }
+    throw last;
+  }
+  async function chatJSON(sys, user) {
+    const k = K(); const errs = []; const order = ["gemini", "openai", "groq"]; let skipped = false;
+    for (const p of order) {
+      const have = p === "gemini" ? k.gem : p === "openai" ? k.gpt : k.groq;
+      if (!have) continue;
+      if (isBad(p)) { skipped = true; errs.push(p + ": معطّل (مفتاح غلط أو رصيد خلص)"); continue; }
+      try {
+        if (p === "gemini") {
+          const contents = [];
+          history.slice(-12).forEach((h) => { contents.push({ role: "user", parts: [{ text: h.u }] }); contents.push({ role: "model", parts: [{ text: h.r }] }); });
+          contents.push({ role: "user", parts: [{ text: user }] });
+          const d = await geminiCall({ systemInstruction: { parts: [{ text: sys }] }, contents, generationConfig: { responseMimeType: "application/json", temperature: 0.4 } });
+          return parseLoose(d.candidates[0].content.parts[0].text);
+        }
+        const url = p === "openai" ? "https://api.openai.com/v1/chat/completions" : "https://api.groq.com/openai/v1/chat/completions";
+        const models = p === "openai" ? ["gpt-4o", "gpt-4o-mini"] : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+        const msgs = [{ role: "system", content: sys }];
+        history.slice(-12).forEach((h) => { msgs.push({ role: "user", content: h.u }); msgs.push({ role: "assistant", content: h.r }); });
+        msgs.push({ role: "user", content: user });
+        let lastE;
+        for (const m of models) {
+          try {
+            const r = await post(url, { Authorization: "Bearer " + have }, { model: m, response_format: { type: "json_object" }, messages: msgs, temperature: 0.4 });
+            const d = await r.json();
+            return parseLoose(d.choices[0].message.content);
+          } catch (e) { lastE = e; if (e.status !== 400 && e.status !== 404) throw e; }
+        }
+        throw lastE;
+      } catch (e) { markBad(p, e); errs.push(p + ": " + why(e)); }
+    }
+    if (errs.length) throw new Error(errs.join(" | "));
+    throw new Error("حط مفتاح Gemini أو Groq أو OpenAI من زر ⚙");
+  }
+
+  // ------------------------------------------------------------ audio context + TTS
+  let AC = null, cur = null;
+  function audioCtx() {
+    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+    if (AC.state === "suspended") AC.resume();
+    return AC;
+  }
+  function playBuffer(buf) {
+    return new Promise((res) => {
+      const ac = audioCtx(); const src = ac.createBufferSource();
+      src.buffer = buf; src.connect(ac.destination); cur = src;
+      src.onended = () => { if (cur === src) cur = null; res(); };
+      src.start();
+    });
+  }
+  function stopAudio() { try { if (cur) { cur.onended = null; cur.stop(); cur = null; } } catch (e) {} try { speechSynthesis.cancel(); } catch (e) {} }
+  const ttsDead = {}; const phraseCache = {};
+  function pcmToBuffer(bytes, rate) {
+    const n = Math.floor(bytes.length / 2); const dv = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
+    const b = audioCtx().createBuffer(1, n, rate); const ch = b.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+    return b;
+  }
+  async function cloudTts(text) {
+    const k = K(); const arabic = /[\u0600-\u06FF]/.test(text);
+    const order = [];
+    if (k.fish && k.fishv) order.push("fish");
+    if (k.gem) order.push("gemini");
+    if (k.gpt) order.push("openai");
+    for (const p of order) {
+      if (ttsDead[p]) continue;
+      try {
+        if (p === "fish") {
+          const r = await post("https://api.fish.audio/v1/tts", { Authorization: "Bearer " + k.fish, model: "s2-pro" }, { text, reference_id: k.fishv, format: "wav", latency: "balanced" });
+          return await audioCtx().decodeAudioData(await r.arrayBuffer());
+        }
+        if (p === "gemini") {
+          const d = await geminiTtsCall(text);
+          const b64 = d.candidates[0].content.parts[0].inlineData.data;
+          const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          return pcmToBuffer(bytes, 24000);
+        }
+        if (p === "openai") {
+          const r = await post("https://api.openai.com/v1/audio/speech", { Authorization: "Bearer " + k.gpt }, { model: "gpt-4o-mini-tts", voice: "onyx", input: text, response_format: "mp3" });
+          return await audioCtx().decodeAudioData(await r.arrayBuffer());
+        }
+      } catch (e) {
+        if ([400, 401, 402, 403, 404, 429].includes(e.status) || e instanceof TypeError) {
+          ttsDead[p] = true; log("err", "صوت " + p + " مش شغال (" + (e.status || "مفيش اتصال/CORS") + ")، هستخدم البديل");
+        }
+      }
+    }
+    return null;
+  }
+  async function geminiTtsCall(text) {
+    const k = K();
+    return await (await post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent", { "x-goog-api-key": k.gem }, {
+      contents: [{ parts: [{ text: "Say in a calm, deep, confident assistant voice: " + text }] }],
+      generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Charon" } } } }
+    })).json();
+  }
+  function browserSpeak(text) {
+    return new Promise((res) => {
+      if (!("speechSynthesis" in window)) return res();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = /[\u0600-\u06FF]/.test(text) ? "ar-EG" : "en-US";
+      u.onend = u.onerror = () => res();
+      speechSynthesis.cancel(); speechSynthesis.speak(u);
+    });
+  }
+  async function speak(text, shown, cache) {
+    log("j", shown || text); state("speaking", "SPEAKING");
+    const clean = text.replace(/[*_#`]/g, "");
+    let buf = cache ? phraseCache[clean] : null;
+    if (!buf) { buf = await cloudTts(clean); if (buf && cache) phraseCache[clean] = buf; }
+    if (buf) await playBuffer(buf); else await browserSpeak(clean);
+    await sleep(250);
+  }
+  async function prewarm() {
+    if (!hasKey()) return;
+    for (const t of ["Yes, Boss", "Anything else, Boss?", "As you wish, Boss."]) {
+      if (phraseCache[t]) continue;
+      try { const b = await cloudTts(t); if (b) phraseCache[t] = b; } catch (e) {}
+    }
+  }
+
+  // ------------------------------------------------------------ hearing (record + transcribe, or Web Speech)
+  let cancelRec = null, listening = false;
+  function recordUtterance(maxWait) {
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }).then((stream) => {
+      const ac = audioCtx(); const src = ac.createMediaStreamSource(stream);
+      const sp = ac.createScriptProcessor(4096, 1, 1);
+      const chunks = []; let pre = []; let started = false, silent = 0, time = 0, noise = 0, thr = 0.02, cancelled = false;
+      const frameMs = (4096 / ac.sampleRate) * 1000;
+      return new Promise((resolve) => {
+        const finish = () => {
+          try { sp.disconnect(); src.disconnect(); } catch (e) {}
+          stream.getTracks().forEach((t) => t.stop());
+          resolve(started && !cancelled ? { chunks, rate: ac.sampleRate } : null);
+        };
+        sp.onaudioprocess = (e) => {
+          const d = new Float32Array(e.inputBuffer.getChannelData(0));
+          let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+          const rms = Math.sqrt(s / d.length); time += frameMs;
+          if (time <= frameMs * 3) { noise = Math.max(noise, rms); thr = Math.min(0.08, Math.max(0.015, noise * 2.5)); pre.push(d); return; }
+          if (rms > thr) { if (!started) { started = true; chunks.push(...pre); } silent = 0; } else if (started) silent += frameMs;
+          if (started) chunks.push(d); else { pre.push(d); if (pre.length > 4) pre.shift(); }
+          if (cancelled || (!started && time > maxWait) || (started && silent >= 1200) || time > 16000) finish();
+        };
+        cancelRec = () => { cancelled = true; };
+        src.connect(sp); sp.connect(ac.destination);
+      });
+    });
+  }
+  function toWav16k(rec) {
+    let n = 0; rec.chunks.forEach((c) => (n += c.length));
+    const all = new Float32Array(n); let o = 0; rec.chunks.forEach((c) => { all.set(c, o); o += c.length; });
+    const ratio = rec.rate / 16000; const len = Math.floor(all.length / ratio); const pcm = new Int16Array(len);
+    for (let i = 0; i < len; i++) { const x = all[Math.floor(i * ratio)]; pcm[i] = Math.max(-1, Math.min(1, x)) * 32767; }
+    const buf = new ArrayBuffer(44 + len * 2); const v = new DataView(buf);
+    const w = (p, s) => { for (let i = 0; i < s.length; i++) v.setUint8(p + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + len * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, len * 2, true);
+    for (let i = 0; i < len; i++) v.setInt16(44 + i * 2, pcm[i], true);
+    return new Blob([buf], { type: "audio/wav" });
+  }
+  function b64(blob) {
+    return new Promise((res) => { const r = new FileReader(); r.onloadend = () => res(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
+  }
+  async function transcribe(wav) {
+    const k = K(); const errs = [];
+    if (k.gem && !isBad("gemini")) {
+      try {
+        const d = await geminiCall({ contents: [{ parts: [{ text: "Transcribe this audio exactly as spoken. Output only the transcript, in the original language (Arabic stays Arabic, English stays English). If there is no speech, output nothing." }, { inlineData: { mimeType: "audio/wav", data: await b64(wav) } }] }] });
+        return ((d.candidates[0].content.parts[0].text) || "").trim();
+      } catch (e) { markBad("gemini", e); errs.push("gemini: " + why(e)); }
+    }
+    for (const p of ["groq", "openai"]) {
+      const key = p === "groq" ? k.groq : k.gpt; if (!key || isBad(p)) continue;
+      try {
+        const fd = new FormData(); fd.append("file", wav, "a.wav"); fd.append("model", p === "groq" ? "whisper-large-v3-turbo" : "whisper-1"); fd.append("response_format", "json");
+        const r = await fetch(p === "groq" ? "https://api.groq.com/openai/v1/audio/transcriptions" : "https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + key }, body: fd });
+        if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; e.body = await r.text().catch(() => ""); throw e; }
+        return ((await r.json()).text || "").trim();
+      } catch (e) { markBad(p, e); errs.push(p + ": " + why(e)); }
+    }
+    throw new Error(errs.join(" | ") || "مفيش مفتاح");
+  }
+  function webSpeechOnce() {
+    return new Promise((res) => {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { log("err", "المتصفح ده مش بيدعم التعرف على الصوت. استخدم Chrome."); return res(null); }
+      const r = new SR(); r.lang = typeof currentLang !== "undefined" ? currentLang : "ar-EG"; r.interimResults = false; r.maxAlternatives = 1;
+      let done = false; const fin = (v) => { if (done) return; done = true; try { r.abort(); } catch (e) {} res(v); };
+      r.onresult = (e) => fin(e.results[0][0].transcript);
+      r.onerror = (e) => { if (e.error === "not-allowed") log("err", "اسمح للمتصفح بالمايك"); fin(null); };
+      r.onend = () => fin(null);
+      cancelRec = () => fin(null);
+      r.start();
+    });
+  }
+  async function listenText(maxWait) {
+    listening = true; state("listening", "LISTENING");
+    try {
+      const k = K();
+      if (!(k.gem || k.groq || k.gpt)) return await webSpeechOnce();
+      const rec = await recordUtterance(maxWait);
+      if (!rec) return null;
+      state("thinking", "THINKING");
+      const txt = await transcribe(toWav16k(rec));
+      return txt || null;
+    } catch (e) {
+      log("err", e.name === "NotAllowedError" ? "اسمح للمتصفح بالمايك" : e.message);
+      return null;
+    } finally { listening = false; }
+  }
+
+  // ------------------------------------------------------------ actions
+  function openTab(url) {
+    const w = window.open(url, "_blank");
+    if (!w) {
+      const a = '<a href="' + url + '" target="_blank" rel="noopener" style="color:#22d3ee;text-decoration:underline">اضغط هنا للفتح</a>';
+      const box = $("log"); if (box) { box.innerHTML += '<div class="j">› ' + a + "</div>"; box.scrollTop = box.scrollHeight; }
+    }
+    return true;
+  }
+  async function confirmSend(target, message) {
+    if (!voiceMode) return true;
+    await speak("To " + target + ": " + message + ". Shall I send it, Boss?", null, false);
+    const a = await listenText(7000);
+    return !!a && isYes(a);
+  }
+  async function runAction(a) {
+    const enc = encodeURIComponent;
+    switch (a.type) {
+      case "open_url": return /^https?:\/\//i.test(a.url || "") && openTab(a.url) ? null : "اللينك مش صحيح";
+      case "web_search": return a.query && openTab("https://www.google.com/search?q=" + enc(a.query)) ? null : "معرفتش أبحث";
+      case "youtube_search": return a.query && openTab("https://www.youtube.com/results?search_query=" + enc(a.query)) ? null : "معرفتش أفتح يوتيوب";
+      case "navigate": return a.place && openTab("https://www.google.com/maps/search/" + enc(a.place)) ? null : "معرفتش أفتح الخريطة";
+      case "whatsapp": {
+        if (!a.message) return "مفيش رسالة";
+        if (!(await confirmSend(a.phone || "WhatsApp", a.message))) return "تمام، الغيتها";
+        const ph = (a.phone || "").replace(/\D/g, "");
+        openTab("https://wa.me/" + ph + "?text=" + enc(a.message)); return null;
+      }
+      case "email": openTab("mailto:" + (a.to || "") + "?subject=" + enc(a.subject || "") + "&body=" + enc(a.body || "")); return null;
+      case "timer": {
+        const s = Math.max(1, parseInt(a.seconds, 10) || 60); const label = a.label || "Timer";
+        setTimeout(() => { speak("Time is up, Boss. " + label, label, false); }, s * 1000); return null;
+      }
+      case "copy": try { await navigator.clipboard.writeText(a.text || ""); return null; } catch (e) { return "معرفتش أنسخ"; }
+      case "create_project": {
+        const p = (a.project_prompt || "").slice(0, 1500); if (!p) return "ناقصني وصف المشروع";
+        openTab("https://lovable.dev/?autosubmit=true#prompt=" + enc(p)); return null;
+      }
+      default: return null;
+    }
+  }
+  async function act(res, userText) {
+    let reply = (res.reply || "").trim(); const modelReply = reply;
+    if (res.remember) addMem(res.remember);
+    const list = Array.isArray(res.actions) ? res.actions : [];
+    for (let i = 0; i < list.length; i++) {
+      const err = await runAction(list[i] || {});
+      if (err) { reply = err; break; }
+      if (i < list.length - 1) await sleep(700);
+    }
+    if (reply) {
+      pushHist(userText, reply);
+      const sp = (res.speech || "").trim();
+      await speak(reply === modelReply && sp ? sp : reply, reply, false);
+    }
+    return !!res.done;
+  }
+  async function think(text) {
+    const note = langNote(text);
+    try { return await chatJSON(sysPrompt(text), note ? text + "\n\n[" + note + "]" : text); }
+    catch (e) { log("err", e.message); return null; }
+  }
+
+  // ------------------------------------------------------------ conversation session
+  let sessionActive = false, voiceMode = false, busy = false;
+  async function runSession() {
+    if (!hasKey()) { log("err", "حط مفتاح Gemini أو Groq أو OpenAI من زر ⚙"); if (panel) panel.style.display = "block"; return; }
+    busy = true; sessionActive = true; voiceMode = true; audioCtx();
+    try {
+      await speak("Yes, Boss", null, true);
+      for (let round = 0; sessionActive && round < 8; round++) {
+        const text = await listenText(round === 0 ? 9000 : 7000);
+        if (!text || !sessionActive) break;
+        if (isNoThanks(text)) { await speak("As you wish, Boss.", null, true); break; }
+        state("thinking", "THINKING"); log("u", text);
+        const res = await think(text); if (!res) break;
+        const done = await act(res, text);
+        if (done || !sessionActive) break;
+        await speak("Anything else, Boss?", null, true);
+      }
+    } finally { sessionActive = false; voiceMode = false; busy = false; state("", IDLE); }
+  }
+  function cancelSession() { sessionActive = false; if (cancelRec) cancelRec(); stopAudio(); }
+  window.toggle = function () { if (sessionActive) cancelSession(); else if (!busy) runSession(); };
+  window.handle = async function (t) {
+    t = (t || "").trim(); if (!t || busy) return;
+    if (!hasKey()) { log("err", "حط مفتاح Gemini أو Groq أو OpenAI من زر ⚙"); if (panel) panel.style.display = "block"; return; }
+    busy = true; voiceMode = false; audioCtx();
+    try { state("thinking", "THINKING"); log("u", t); const res = await think(t); if (res) await act(res, t); }
+    finally { busy = false; state("", IDLE); }
+  };
+  const hud = $("hud"); if (hud) hud.onclick = window.toggle;
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || "")) { e.preventDefault(); window.toggle(); }
+  });
+  const note = $("micNote"); if (note) note.textContent = "اضغط على الدايرة أو المسطرة (Space) عشان تتكلم";
+  setTimeout(prewarm, 2500);
+})();
+
+</script>
+</body>
+</html>

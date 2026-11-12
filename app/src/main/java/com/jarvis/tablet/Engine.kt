@@ -73,6 +73,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var track: AudioTrack? = null
     @Volatile private var sessionActive = false
     @Volatile private var voiceMode = false
+    private val bad = HashMap<String, Pair<Long, Int>>()
     @Volatile private var agentSummary: String? = null
     private class AgentResult(val ok: Boolean, val summary: String)
     private val phraseCache = HashMap<String, Pcm>()
@@ -249,6 +250,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             withContext(Dispatchers.IO) { transcribe(wav, "auto") }.ifBlank { null }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: AllFailedException) {
+            Bus.say("err", e.message ?: "كل المفاتيح فشلت"); null
         } catch (e: HttpException) {
             Bus.say("err", httpMessage(e)); null
         } catch (e: Exception) {
@@ -568,21 +571,21 @@ $extraRules
     private fun transcribe(wav: ByteArray, lang: String): String {
         val code = when { lang.startsWith("ar") -> "ar"; lang.startsWith("en") -> "en"; else -> "" }
         var last: Exception? = null
-        if (Keys.groq.isNotBlank()) {
+        if (Keys.groq.isNotBlank() && !isBad("groq")) {
             try {
                 return whisper("https://api.groq.com/openai/v1/audio/transcriptions", Keys.groq,
                     Config.list("groq_stt_models").ifEmpty { listOf("whisper-large-v3-turbo", "whisper-large-v3") }, wav, code)
-            } catch (e: Exception) { last = e }
+            } catch (e: Exception) { last = e; markBad("groq", e) }
         }
-        if (Keys.openai.isNotBlank()) {
+        if (Keys.openai.isNotBlank() && !isBad("openai")) {
             try {
                 return whisper("https://api.openai.com/v1/audio/transcriptions", Keys.openai, listOf("whisper-1"), wav, code)
-            } catch (e: Exception) { last = e }
+            } catch (e: Exception) { last = e; markBad("openai", e) }
         }
-        if (Keys.gemini.isNotBlank()) {
-            try { return geminiTranscribe(wav) } catch (e: Exception) { last = e }
+        if (Keys.gemini.isNotBlank() && !isBad("gemini")) {
+            try { return geminiTranscribe(wav) } catch (e: Exception) { last = e; markBad("gemini", e) }
         }
-        throw last ?: NoKeyException()
+        throw last ?: (if (Keys.hasLlm()) AllFailedException("كل المفاتيح فيها مشكلة، عدّلها من زر ⚙") else NoKeyException())
     }
 
     private fun whisper(url: String, key: String, models: List<String>, wav: ByteArray, lang: String): String {
@@ -641,6 +644,18 @@ $extraRules
         }
     }
 
+    /** a provider whose key is wrong / out of credit is skipped for 10 minutes (or until the key changes) */
+    private fun isBad(p: String): Boolean {
+        val b = bad[p] ?: return false
+        return b.second == Keys.version && System.currentTimeMillis() - b.first < 600_000
+    }
+
+    private fun markBad(p: String, e: Exception) {
+        if (e is HttpException && (e.code == 401 || e.code == 402 || e.code == 403 ||
+                (e.code == 429 && (e.body.contains("credit", true) || e.body.contains("quota", true) || e.body.contains("billing", true)))))
+            bad[p] = System.currentTimeMillis() to Keys.version
+    }
+
     private fun shortErr(e: Exception): String = when {
         e is HttpException && e.code == 429 &&
             (e.body.contains("credit", true) || e.body.contains("quota", true) || e.body.contains("billing", true)) -> "الرصيد خلص"
@@ -657,6 +672,7 @@ $extraRules
         val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
         val errs = ArrayList<String>()
         for (p in order) {
+            if (isBad(p)) { errs.add("$p: معطّل (مفتاح غلط أو رصيد خلص)"); continue }
             try {
                 val r: JSONObject? = when (p) {
                     "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
@@ -669,11 +685,12 @@ $extraRules
                 }
                 if (r != null) return r
             } catch (e: Exception) {
+                markBad(p, e)
                 errs.add("$p: ${shortErr(e)}")
             }
         }
         if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
-        throw NoKeyException()
+        throw if (Keys.hasLlm()) AllFailedException("كل المفاتيح فيها مشكلة، عدّلها من زر ⚙") else NoKeyException()
     }
 
     private fun geminiCall(body: JSONObject): String {
@@ -717,6 +734,7 @@ $extraRules
         val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
         val errs = ArrayList<String>()
         for (p in order) {
+            if (isBad(p)) continue
             try {
                 if (p == "openai" && Keys.openai.isNotBlank()) return openAiChat(
                     "https://api.openai.com/v1/chat/completions", Keys.openai,
@@ -725,10 +743,10 @@ $extraRules
                     "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
                     Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user, false)
                 if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiJson(sys, user)
-            } catch (e: Exception) { errs.add("$p: ${shortErr(e)}") }
+            } catch (e: Exception) { markBad(p, e); errs.add("$p: ${shortErr(e)}") }
         }
         if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
-        throw NoKeyException()
+        throw if (Keys.hasLlm()) AllFailedException("كل المفاتيح فيها مشكلة، عدّلها من زر ⚙") else NoKeyException()
     }
 
     private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String, withHistory: Boolean = true): JSONObject {
@@ -771,7 +789,7 @@ $extraRules
         }
         if (typed != null) parts.put(JSONObject().put("text", "المستخدم: $typed"))
         val body = JSONObject()
-            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt(wav != null)))))
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt(wav != null, typed ?: "")))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.4))
         val txt = geminiCall(body)
@@ -1138,6 +1156,8 @@ Rules:
                 withContext(Dispatchers.IO) { agentChat(agentSystem(), user) }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: AllFailedException) {
+                return AgentResult(false, e.message ?: "كل المفاتيح فشلت")
             } catch (e: Exception) {
                 return AgentResult(false, "مشكلة في الاتصال بالنت")
             }
