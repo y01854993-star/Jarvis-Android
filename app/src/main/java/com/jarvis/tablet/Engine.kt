@@ -56,6 +56,7 @@ import kotlin.math.sqrt
 
 class HttpException(val code: Int, val body: String = "") : Exception("HTTP $code")
 class NoKeyException : Exception("no key")
+class AllFailedException(msg: String) : Exception(msg)
 
 private const val IDLE = "TAP JARVIS TO SPEAK"
 
@@ -170,8 +171,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             withContext(Dispatchers.IO) { llmCall(text) }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: AllFailedException) {
+            Bus.say("err", e.message ?: "كل المفاتيح فشلت"); null
         } catch (e: NoKeyException) {
-            Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); null
+            Bus.say("err", "حط مفتاح Groq أو OpenAI أو Gemini الأول"); null
         } catch (e: HttpException) {
             Bus.say("err", httpMessage(e)); null
         } catch (e: Exception) {
@@ -232,8 +235,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** records one utterance and returns its transcript (language auto-detected), or null */
     private suspend fun listenText(waitFrames: Int): String? {
-        if (!(Keys.groq.isNotBlank() || Keys.openai.isNotBlank())) {
-            Bus.say("err", "محتاج مفتاح Groq أو OpenAI عشان أفهم الصوت"); return null
+        if (!Keys.hasLlm()) {
+            Bus.say("err", "محتاج مفتاح Groq أو OpenAI أو Gemini عشان أفهم الصوت"); return null
         }
         listeningNow = true
         Bus.state("listening", "LISTENING")
@@ -275,7 +278,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     private suspend fun confirmSend(target: String, message: String): Boolean {
         if (!voiceMode || !Config.confirmMessages()) return true
-        if (!(Keys.groq.isNotBlank() || Keys.openai.isNotBlank())) return true
+        if (!Keys.hasLlm()) return true
         speak("To $target: $message. Shall I send it, Boss?", false)
         val ans = listenText(60) ?: return false
         return isYes(ans)
@@ -576,6 +579,9 @@ $extraRules
                 return whisper("https://api.openai.com/v1/audio/transcriptions", Keys.openai, listOf("whisper-1"), wav, code)
             } catch (e: Exception) { last = e }
         }
+        if (Keys.gemini.isNotBlank()) {
+            try { return geminiTranscribe(wav) } catch (e: Exception) { last = e }
+        }
         throw last ?: NoKeyException()
     }
 
@@ -635,12 +641,21 @@ $extraRules
         }
     }
 
+    private fun shortErr(e: Exception): String = when {
+        e is HttpException && e.code == 429 &&
+            (e.body.contains("credit", true) || e.body.contains("quota", true) || e.body.contains("billing", true)) -> "الرصيد خلص"
+        e is HttpException && e.code == 429 -> "وصلت حد الاستخدام"
+        e is HttpException && (e.code == 401 || e.code == 403) -> "المفتاح غلط"
+        e is HttpException -> "خطأ ${e.code}"
+        else -> e.javaClass.simpleName
+    }
+
     private fun llmCall(text: String): JSONObject {
         val sys = systemPrompt(false, text)
         val note = langNote(text)
         val user = if (note.isEmpty()) text else "$text\n\n[$note]"
         val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
-        var last: Exception? = null
+        val errs = ArrayList<String>()
         for (p in order) {
             try {
                 val r: JSONObject? = when (p) {
@@ -654,15 +669,53 @@ $extraRules
                 }
                 if (r != null) return r
             } catch (e: Exception) {
-                last = e
+                errs.add("$p: ${shortErr(e)}")
             }
         }
-        throw last ?: NoKeyException()
+        if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
+        throw NoKeyException()
+    }
+
+    private fun geminiCall(body: JSONObject): String {
+        var last: HttpException? = null
+        for (m in listOf(Config.model(), "gemini-flash-latest").distinct()) {
+            try {
+                return postJson("https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent",
+                    mapOf("x-goog-api-key" to Keys.gemini), body)
+            } catch (e: HttpException) {
+                last = e
+                if (e.code != 400 && e.code != 404) throw e
+            }
+        }
+        throw last ?: Exception("no gemini model")
+    }
+
+    private fun geminiJson(sys: String, user: String): JSONObject {
+        val body = JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+            .put("contents", JSONArray().put(JSONObject().put("role", "user")
+                .put("parts", JSONArray().put(JSONObject().put("text", user)))))
+            .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.3))
+        val raw = geminiCall(body)
+        val out = JSONObject(raw).getJSONArray("candidates").getJSONObject(0)
+            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+        return parseLoose(out)
+    }
+
+    private fun geminiTranscribe(wav: ByteArray): String {
+        val parts = JSONArray()
+            .put(JSONObject().put("text", "Transcribe this audio exactly as spoken. Output only the transcript, in the original language (Arabic stays Arabic, English stays English). If there is no speech, output nothing."))
+            .put(JSONObject().put("inlineData", JSONObject().put("mimeType", "audio/wav")
+                .put("data", Base64.encodeToString(wav, Base64.NO_WRAP))))
+        val body = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", parts)))
+        val raw = geminiCall(body)
+        return JSONObject(raw).getJSONArray("candidates").getJSONObject(0)
+            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).optString("text").trim()
     }
 
     private fun agentChat(sys: String, user: String): JSONObject {
-        val order = if (Config.brain() == "groq") listOf("groq", "openai") else listOf("openai", "groq")
-        var last: Exception? = null
+        val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
+        val errs = ArrayList<String>()
         for (p in order) {
             try {
                 if (p == "openai" && Keys.openai.isNotBlank()) return openAiChat(
@@ -671,9 +724,11 @@ $extraRules
                 if (p == "groq" && Keys.groq.isNotBlank()) return openAiChat(
                     "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
                     Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user, false)
-            } catch (e: Exception) { last = e }
+                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiJson(sys, user)
+            } catch (e: Exception) { errs.add("$p: ${shortErr(e)}") }
         }
-        throw last ?: NoKeyException()
+        if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
+        throw NoKeyException()
     }
 
     private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String, withHistory: Boolean = true): JSONObject {
@@ -719,10 +774,7 @@ $extraRules
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt(wav != null)))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.4))
-        val txt = postJson(
-            "https://generativelanguage.googleapis.com/v1beta/models/${Config.model()}:generateContent",
-            mapOf("x-goog-api-key" to Keys.gemini), body
-        )
+        val txt = geminiCall(body)
         val out = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
         return parseLoose(out)
@@ -1060,7 +1112,7 @@ Rules:
         val a = JarvisAccessibility.instance
             ?: return AgentResult(false, "فعّل خدمة Jarvis من إمكانية الوصول عشان أقدر أتحكم في الموبايل")
         if (goal.isBlank()) return AgentResult(false, "مفهمتش المطلوب")
-        if (!(Keys.openai.isNotBlank() || Keys.groq.isNotBlank())) return AgentResult(false, "محتاج مفتاح OpenAI أو Groq")
+        if (!Keys.hasLlm()) return AgentResult(false, "محتاج مفتاح Groq أو OpenAI أو Gemini")
         val steps = ArrayList<String>()
         val lang = langNote(goal)
         Bus.log("AGENT: $goal")
