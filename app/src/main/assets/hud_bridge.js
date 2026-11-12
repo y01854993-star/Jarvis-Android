@@ -19,6 +19,15 @@
     panel.insertBefore(div, $("saveBtn"));
     $("kGem").value = localStorage.getItem("k_gem") || "";
   }
+  if (panel && !$("kFish")) {
+    const d2 = document.createElement("div");
+    d2.className = "ig";
+    d2.innerHTML = '<label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key">' +
+                   '<label style="margin-top:6px">Fish Voice ID (من رابط الصوت fish.audio/m/...)</label><input type="text" id="kFishV" placeholder="مثال: 9f79a93aa44b...">';
+    panel.insertBefore(d2, $("saveBtn"));
+    $("kFish").value = localStorage.getItem("k_fish") || "";
+    $("kFishV").value = localStorage.getItem("k_fishv") || "";
+  }
   const clock = $("clock");
   if (clock && panel) clock.onclick = function () {
     panel.style.display = (panel.style.display === "none") ? "block" : "none";
@@ -31,6 +40,8 @@
         gpt: (typeof keys !== "undefined" && keys.gpt) || "",
         groq: (typeof keys !== "undefined" && keys.groq) || "",
         gem: localStorage.getItem("k_gem") || "",
+        fish: localStorage.getItem("k_fish") || "",
+        fishv: localStorage.getItem("k_fishv") || "",
         name: (typeof userName !== "undefined" && userName) || ""
       }));
     } catch (e) {}
@@ -38,6 +49,8 @@
   const origSave = window.saveKeys;
   window.saveKeys = function () {
     const g = $("kGem"); if (g) localStorage.setItem("k_gem", g.value.trim());
+    const f = $("kFish"); if (f) localStorage.setItem("k_fish", f.value.trim());
+    const fv = $("kFishV"); if (fv) localStorage.setItem("k_fishv", fv.value.trim());
     if (origSave) origSave();
     pushKeys();
   };

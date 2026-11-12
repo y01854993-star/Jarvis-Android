@@ -1221,7 +1221,7 @@ Rules:
     }
 
     // ------------------------------------------------------------ tts: cloud voice + robot effect, system fallback
-    private class Pcm(val samples: ShortArray, val rate: Int)
+    private class Pcm(val samples: ShortArray, val rate: Int, val provider: String = "")
 
     private fun postBytes(url: String, headers: Map<String, String>, body: JSONObject): ByteArray {
         val conn = URL(url).openConnection() as HttpURLConnection
@@ -1328,21 +1328,37 @@ Rules:
         return Pcm(out, rate)
     }
 
+    private fun fishTts(text: String): Pcm {
+        val body = JSONObject().put("text", text).put("reference_id", Keys.fishVoice)
+            .put("format", "wav").put("latency", "balanced")
+        val bytes = postBytes("https://api.fish.audio/v1/tts",
+            mapOf("Authorization" to "Bearer ${Keys.fish}", "model" to Config.fishModel()), body)
+        val p = parseWav(bytes)
+        return Pcm(p.samples, p.rate, "fish")
+    }
+
     private fun cloudTts(text: String): Pcm? {
         val order = when (Config.ttsProvider()) {
+            "fish" -> listOf("fish")
             "gemini" -> listOf("gemini")
             "openai" -> listOf("openai")
             "groq" -> listOf("groq")
-            else -> listOf("gemini", "openai", "groq")
+            else -> {
+                val l = mutableListOf("gemini", "openai", "groq")
+                val arabic = text.any { it in '\u0600'..'\u06FF' }
+                if (Keys.fish.isNotBlank() && Keys.fishVoice.isNotBlank() && (Config.fishFor() == "all" || !arabic)) l.add(0, "fish")
+                l
+            }
         }
         for (p in order) {
             if (p in deadTts) continue
             try {
+                if (p == "fish" && Keys.fish.isNotBlank() && Keys.fishVoice.isNotBlank()) return fishTts(text)
                 if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiTts(text)
                 if (p == "openai" && Keys.openai.isNotBlank()) return openAiTts(text)
                 if (p == "groq" && Keys.groq.isNotBlank()) return groqTts(text)
             } catch (e: Exception) {
-                if (e is HttpException && e.code in listOf(400, 401, 403, 404, 429)) {
+                if (e is HttpException && e.code in listOf(400, 401, 402, 403, 404, 429)) {
                     deadTts.add(p)
                     Bus.say("err", "صوت $p مش شغال (${e.code} ${e.body.take(80)})، هستخدم البديل")
                 }
@@ -1405,7 +1421,7 @@ Rules:
             if (phraseCache.containsKey(t)) continue
             try {
                 val pcm = cloudTts(t) ?: continue
-                val fx = Config.robotFx()
+                val fx = if (pcm.provider == "fish") 0.0 else Config.robotFx()
                 phraseCache[t] = if (fx > 0.0) robotize(pcm, fx) else pcm
             } catch (_: Exception) {}
         }
@@ -1422,7 +1438,7 @@ Rules:
         if (Config.ttsProvider() != "system") {
             val pcm = try { withContext(Dispatchers.IO) { cloudTts(clean) } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
             if (pcm != null) {
-                val fx = Config.robotFx()
+                val fx = if (pcm.provider == "fish") 0.0 else Config.robotFx()
                 val out = if (fx > 0.0) robotize(pcm, fx) else pcm
                 if (cache) phraseCache[clean] = out
                 playPcm(out)

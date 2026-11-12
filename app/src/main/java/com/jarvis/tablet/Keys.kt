@@ -18,6 +18,9 @@ object Keys {
     val gemini: String get() = (sp.getString("gemini", "") ?: "").ifBlank { BuildConfig.GEMINI_KEY }
     val name: String get() = (sp.getString("name", "") ?: "").trim().let { if (it.isBlank() || it == "يا فندم") "Boss" else it }
 
+    val fish: String get() = sp.getString("fish", "") ?: ""
+    val fishVoice: String get() = sp.getString("fishvoice", "") ?: ""
+
     fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank()
 
     fun save(json: JSONObject) {
@@ -26,6 +29,8 @@ object Keys {
             .putString("groq", json.optString("groq").trim())
             .putString("name", json.optString("name").trim())
             .putString("gemini", json.optString("gem").trim())
+            .putString("fish", json.optString("fish").trim())
+            .putString("fishvoice", json.optString("fishv").trim())
             .apply()
     }
 

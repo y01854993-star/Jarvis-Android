@@ -30,6 +30,8 @@ object Config {
     fun byePhrase() = json.optString("bye_phrase", "As you wish, Boss.")
     fun confirmMessages() = json.optBoolean("confirm_messages", true)
     fun geminiVoice() = json.optString("gemini_voice", "Charon")
+    fun fishModel() = json.optString("fish_model", "s2-pro")
+    fun fishFor() = json.optString("fish_for", "all")
     fun pcMac() = json.optString("pc_mac", "")
     fun broadcastIp() = json.optString("broadcast_ip", "192.168.1.255")
     fun contacts(): JSONObject = json.optJSONObject("contacts") ?: JSONObject()
