@@ -855,6 +855,8 @@ $extraRules
         var frames = 0
         var noise = 0.0
         var thr = 500.0
+        var zeroRun = 0
+        var blocked = false
         try {
             rec.startRecording()
             while (listeningNow && frames < 160) {
@@ -863,6 +865,8 @@ $extraRules
                 val chunk = frame.copyOf(n)
                 val lvl = rms(chunk)
                 frames++
+                if (chunk.all { it.toInt() == 0 }) zeroRun++ else zeroRun = 0
+                if (zeroRun >= 10) { blocked = true; break }
                 if (frames <= 3) {                       // calibrate on ambient noise
                     noise = maxOf(noise, lvl)
                     thr = minOf(900.0, maxOf(450.0, noise * 2.5))
@@ -882,6 +886,14 @@ $extraRules
         } finally {
             try { rec.stop() } catch (_: Exception) {}
             rec.release()
+        }
+        if (blocked) {
+            Bus.say("err", "المايك مقفول وأنا في الخلفية، فتحتلك التطبيق، اضغط الزر تاني")
+            try {
+                ctx.startActivity(Intent(ctx, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            } catch (_: Exception) {}
+            return@withContext null
         }
         if (!started) return@withContext null
         val total = speech.sumOf { it.size }

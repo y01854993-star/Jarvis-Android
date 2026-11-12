@@ -28,6 +28,36 @@
     $("kFish").value = localStorage.getItem("k_fish") || "";
     $("kFishV").value = localStorage.getItem("k_fishv") || "";
   }
+
+  // زرار ⚙ ظاهر في الهيدر لفتح/إغلاق لوحة المفاتيح
+  const langB = $("langBtn");
+  if (langB && !$("keyBtn")) {
+    const kb = document.createElement("button");
+    kb.id = "keyBtn";
+    kb.textContent = "⚙";
+    kb.setAttribute("style", "background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 9px;font-size:14px;font-family:Orbitron;cursor:pointer;margin-inline-end:5px;flex-shrink:0");
+    kb.onclick = function () {
+      if (!panel) return;
+      const open = panel.style.display === "none";
+      panel.style.display = open ? "block" : "none";
+      if (open) panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+    langB.parentNode.insertBefore(kb, langB.nextSibling);
+  }
+  if (panel && !$("resetKeys")) {
+    const rb = document.createElement("button");
+    rb.id = "resetKeys";
+    rb.textContent = "RESET ALL KEYS";
+    rb.setAttribute("style", "background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron;font-size:12px;cursor:pointer");
+    rb.onclick = function () {
+      ["k_gpt", "k_groq", "k_gem", "k_fish", "k_fishv"].forEach(function (k) { localStorage.removeItem(k); });
+      ["kGpt", "kGroq", "kGem", "kFish", "kFishV"].forEach(function (i) { const e = $(i); if (e) e.value = ""; });
+      if (typeof keys !== "undefined") { keys.gpt = ""; keys.groq = ""; }
+      pushKeys();
+      if (window.addLog) addLog("j", "All keys cleared.");
+    };
+    panel.appendChild(rb);
+  }
   const clock = $("clock");
   if (clock && panel) clock.onclick = function () {
     panel.style.display = (panel.style.display === "none") ? "block" : "none";
