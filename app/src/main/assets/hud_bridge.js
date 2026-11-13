@@ -72,6 +72,10 @@
         gem: localStorage.getItem("k_gem") || "",
         fish: localStorage.getItem("k_fish") || "",
         fishv: localStorage.getItem("k_fishv") || "",
+        ds: localStorage.getItem("k_ds") || "",
+        kimi: localStorage.getItem("k_kimi") || "",
+        gh: localStorage.getItem("k_gh") || "",
+        ghrepo: localStorage.getItem("k_ghrepo") || "",
         name: (typeof userName !== "undefined" && userName) || ""
       }));
     } catch (e) {}

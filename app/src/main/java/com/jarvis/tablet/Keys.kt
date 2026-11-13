@@ -22,7 +22,12 @@ object Keys {
     val fish: String get() = sp.getString("fish", "") ?: ""
     val fishVoice: String get() = sp.getString("fishvoice", "") ?: ""
 
-    fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank()
+    val ds: String get() = sp.getString("ds", "") ?: ""
+    val kimi: String get() = sp.getString("kimi", "") ?: ""
+    val ghToken: String get() = sp.getString("ghtoken", "") ?: ""
+    val ghRepo: String get() = sp.getString("ghrepo", "") ?: ""
+
+    fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank() || ds.isNotBlank() || kimi.isNotBlank()
 
     fun save(json: JSONObject) {
         version++
@@ -33,6 +38,10 @@ object Keys {
             .putString("gemini", json.optString("gem").trim())
             .putString("fish", json.optString("fish").trim())
             .putString("fishvoice", json.optString("fishv").trim())
+            .putString("ds", json.optString("ds").trim())
+            .putString("kimi", json.optString("kimi").trim())
+            .putString("ghtoken", json.optString("gh").trim())
+            .putString("ghrepo", json.optString("ghrepo").trim())
             .apply()
     }
 

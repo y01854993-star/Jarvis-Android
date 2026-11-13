@@ -33,6 +33,7 @@ object Config {
     fun fishModel() = json.optString("fish_model", "s2-pro")
     fun fishFor() = json.optString("fish_for", "all")
     fun agentVision() = json.optBoolean("agent_vision", true)
+    fun geminiDeepModel() = json.optString("gemini_deep_model", "gemini-2.5-pro")
     fun pcMac() = json.optString("pc_mac", "")
     fun broadcastIp() = json.optString("broadcast_ip", "192.168.1.255")
     fun contacts(): JSONObject = json.optJSONObject("contacts") ?: JSONObject()

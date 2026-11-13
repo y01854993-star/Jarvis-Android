@@ -45,5 +45,13 @@
   "gemini_tts_models": [
     "gemini-2.5-flash-preview-tts"
   ],
-  "agent_vision": true
+  "agent_vision": true,
+  "router": "smart",
+  "gemini_deep_model": "gemini-2.5-pro",
+  "deepseek_models": [
+    "deepseek-chat"
+  ],
+  "kimi_models": [
+    "kimi-k2-0905-preview"
+  ]
 }

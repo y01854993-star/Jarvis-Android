@@ -2,7 +2,10 @@ package com.jarvis.tablet
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
@@ -26,6 +29,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -45,6 +49,7 @@ import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -75,7 +80,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var voiceMode = false
     private val bad = HashMap<String, Pair<Long, Int>>()
     @Volatile private var agentSummary: String? = null
-    private class AgentResult(val ok: Boolean, val summary: String)
+    @Volatile private var lastToolResult = ""
+    private var summarizing = false
+    private var syncJob: Job? = null
+    private class AgentResult(val ok: Boolean, val summary: String, val result: String = "")
     private val phraseCache = HashMap<String, Pcm>()
     private val deadTts = HashSet<String>()
     private class Contact(val name: String, val clean: String, val number: String)
@@ -85,6 +93,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     fun start() {
         Keys.init(ctx)
         Memory.init(ctx)
+        Brain.init(ctx)
         tts = TextToSpeech(ctx) { status -> if (status == TextToSpeech.SUCCESS) ttsReady = true }
         Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
         Bus.onToggle = { _ -> bubbleTap() }
@@ -297,7 +306,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         var reply = res.optString("reply").trim()
         val modelReply = reply
 
-        res.optString("remember").trim().takeIf { it.isNotEmpty() }?.let { Memory.add(it) }
+        saveRemember(res.opt("remember"))
 
         val list = ArrayList<JSONObject>()
         res.optJSONArray("actions")?.let { arr ->
@@ -312,11 +321,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
         if (reply.isNotEmpty()) {
             history.addLast(userText to reply)
+            Brain.addTurn(userText, reply)
             while (history.size > 16) history.removeFirst()
             val sp = res.optString("speech").trim()
             speak(if (reply == modelReply && sp.isNotEmpty()) sp else reply, false, reply)
         }
         lastInteraction = System.currentTimeMillis()
+        scope.launch(Dispatchers.IO) { maybeSummarize() }
         return res.optBoolean("done")
     }
 
@@ -373,6 +384,28 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
             }
+            "note_add" -> { Brain.addNote(a.optString("title"), a.optString("text"), a.optString("tags")); scheduleSync(); null }
+            "teach" -> {
+                val i = a.optString("instruction")
+                if (i.isBlank()) "مفهمتش أتعلم إيه" else { Brain.addRule(a.optString("trigger"), i); scheduleSync(); null }
+            }
+            "forget" -> if (Brain.forget(a.optString("query")) == 0) "ملقتش حاجة بالاسم ده" else { scheduleSync(); null }
+            "github_save" -> if (!GitHub.configured()) "اربط GitHub الأول من زر ⚙" else {
+                val ok = withContext(Dispatchers.IO) {
+                    try { GitHub.write(a.optString("path").trimStart('/'), a.optString("content"), a.optString("message").ifBlank { "Jarvis save" }) }
+                    catch (_: Exception) { false }
+                }
+                if (ok) null else "معرفتش أحفظ على GitHub"
+            }
+            "project_save" -> {
+                val name = a.optString("name")
+                if (name.isBlank()) "اسم المشروع إيه؟" else {
+                    Brain.saveProject(name, a.optString("spec"), a.optString("progress"), a.optString("builder"))
+                    pushProject(name)
+                    null
+                }
+            }
+            "handoff" -> runHandoff(a)
             "look" -> {
                 val q = a.optString("question").ifBlank { "اشرح اللي على الشاشة" }
                 val img = screenshotB64()
@@ -395,6 +428,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             "agent" -> {
                 val r = runAgent(a.optString("goal"))
                 agentSummary = r.summary
+                if (r.result.isNotBlank()) lastToolResult = r.result
                 null
             }
             "volume" -> {
@@ -472,7 +506,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             "create_project" -> {
                 val pr = a.optString("project_prompt").take(1500)
                 if (pr.isBlank() || !launch(view("https://lovable.dev/?autosubmit=true#prompt=" + enc(pr)))) "معرفتش افتح لوفابل"
-                else { tryLovableSend(); null }
+                else {
+                    val pname = a.optString("name").ifBlank { pr.take(40) }
+                    Brain.saveProject(pname, pr, "Started building in Lovable", "Lovable")
+                    scheduleSync()
+                    tryLovableSend()
+                    null
+                }
             }
             else -> null
         }
@@ -496,7 +536,15 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         val names = contactNames()
         val apps = installedApps().map { it.first }.take(200).joinToString("، ")
         val now = SimpleDateFormat("EEEE d MMMM yyyy، h:mm a", Locale("ar")).format(Date())
-        val facts = Memory.all().joinToString("\n") { "- $it" }.ifEmpty { "(لسه مفيش)" }
+        val facts = Brain.profile(18).joinToString("\n") { "- $it" }.ifEmpty { "(لسه مفيش)" }
+        val rulesTxt = Brain.rules(15)
+        val rel = Brain.relevant(userText, 6)
+        val brainBlock = buildString {
+            if (rulesTxt.isNotEmpty()) append("- قواعد علّمهالك المستخدم (التزم بيها):\n").append(rulesTxt.joinToString("\n") { "  • $it" }).append("\n")
+            if (rel.isNotEmpty()) append("- معلومات من الذاكرة والمذكرات ممكن تفيد في الرد:\n").append(rel.joinToString("\n") { "  • $it" }).append("\n")
+            if (lastToolResult.isNotBlank()) append("- آخر نتيجة طلعت من أداة (ممكن المستخدم يسأل عنها):\n  ").append(lastToolResult.take(1800)).append("\n")
+        }
+        val calBlock = if (wantsCalendar(userText)) calendarBlock() else ""
         val wantsNotifs = Regex("(اشعار|إشعار|notification|جالي|جاتلي|وصلني|رسايل|رسالة|message|whatsapp|واتساب|مين بعت|ايميل|email)", RegexOption.IGNORE_CASE).containsMatchIn(userText)
         val notifBlock = if (!wantsNotifs) "" else {
             val n = JarvisNotifications.recent(8)
@@ -518,9 +566,9 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 - البطارية: ${batteryPercent()}%
 - حاجات عارفها عن المستخدم:
 $facts
-$notifBlock
+$notifBlock$brainBlock$calBlock
 ارجع JSON فقط بالشكل ده:
-{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "speech": "...", "actions": [ {"type": "..."} ], "remember": "", "done": false}
+{$extraKeys"thought": "تحليل قصير لنية المستخدم وإيه المطلوب بالظبط", "reply": "...", "speech": "...", "actions": [ {"type": "..."} ], "remember": [], "done": false}
 $extraRules
 
 الأوامر الممكنة في actions (ممكن أكتر من واحد بالترتيب لو الطلب فيه خطوات):
@@ -542,10 +590,16 @@ $extraRules
 - {"type":"system","name":"home|back|recents|notifications|quick_settings|lock|screenshot|power"}
 - {"type":"calendar","title":"...","start":"yyyy-MM-dd HH:mm","minutes":60}
 - {"type":"settings","page":"wifi|bluetooth|display|sound|battery|location|apps|accessibility|date|nfc|airplane|storage|all"}
+- {"type":"note_add","title":"...","text":"...","tags":""}: حفظ مذكرة أو معلومة طويلة في قاعدة المعرفة (بتتبحث بعدين وبتتجاوب منها)
+- {"type":"teach","trigger":"...","instruction":"..."}: لما المستخدم يعلّمك قاعدة أو طريقة أو روتين ("لما أقول كذا اعمل كذا"، "اتعلم إن...")
+- {"type":"forget","query":"..."}: ينسى حاجة اتحفظت
+- {"type":"project_save","name":"...","spec":"...","progress":"...","builder":"..."}: حفظ مشروع ومتطلباته وتقدمه (مثلا موقع بيتبني في لوفابل)
+- {"type":"handoff","name":"...","to":"Manus"}: لما أداة بناء (زي لوفابل) رصيدها يخلص أو المستخدم عايز يكمل في أداة تانية: بيجهز ملخص كامل بالمشروع واللي اتعمل ويفتح الأداة التانية تكمل من نفس النقطة مش من الصفر
+- {"type":"github_save","path":"...","content":"...","message":"..."}: حفظ ملف في GitHub بتاع المستخدم
 - {"type":"look","question":"..."}: لما المستخدم يسأل عن اللي على شاشته أو عايزك تشوف الشاشة وتشرحها أو تقراها أو تحللها (بتاخد سكرين شوت وتبص عليه)
 - {"type":"search_answer","query":"..."}: لأي سؤال محتاج معلومة حقيقية أو حديثة (أخبار، طقس، أسعار، نتايج، مين/إيه/إمتى) هتجاوب بنفسك من جوجل. استخدمه لما المستخدم عايز إجابة مش عايز يفتح المتصفح
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
-- {"type":"create_project","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
+- {"type":"create_project","name":"اسم المشروع","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
 قواعد:
 - فكّر في "thought" الأول: المستخدم عايز إيه فعلا؟ في إيه معنى ضمني؟ هل الطلب فيه خطوات؟
@@ -553,9 +607,14 @@ $extraRules
 - لو المستخدم بيحكي أو بيفكر معاك: ناقشه كصديق ذكي، وادي رأيك بصراحة.
 - لو محتاج معلومة حديثة (أخبار، طقس، أسعار، نتايج): استخدم web_search وقول إنك فتحت البحث.
 - لو الطلب مش واضح (مثلا مين الشخص): اسأل سؤال واحد قصير وخلي actions=[].
-- لو المستخدم قال معلومة عن نفسه تستحق تفتكرها (اسمه، شغله، تفضيلاته، ناس مهمة): حطها في remember كجملة قصيرة، غير كده سيبها "".
+- لو المستخدم قال معلومة عن نفسه تستحق تفتكرها (اسمه، شغله، تفضيلاته، ناس مهمة): حطها في remember كمصفوفة [{"cat":"person|preference|schedule|project|other","text":"جملة قصيرة"}]، غير كده سيبها [].
 - speech: نفس reply بالظبط (نفس اللغة) بس معدّل للنطق السليم: الأرقام والتواريخ بالحروف، شكّل (تشكيل خفيف) الكلمات العربي اللي ممكن تتقري غلط، الكلمات الإنجليزي بحروف لاتينية، من غير رموز أو إيموجي أو روابط أو اختصارات، وجمل قصيرة.
 - مثال لطلب فيه خطوات: "افتح يوتيوب وروح على أبو فلة وشغل آخر فيديو" => actions: [{"type":"youtube_search","query":"أبو فلة","latest":true},{"type":"agent","goal":"في نتايج يوتيوب افتح قناة أبو فلة واختار أحدث فيديو (مش Short) وشغله"}]
+- لما المستخدم يطلب حاجة جوه تطبيق (شغل أغنية في Lark Player، دور على كذا في تطبيق كذا، ابعت رسالة في Botim): استخدم agent بـ goal كامل بيوصل للنتيجة النهائية (مش بس open_app): افتح التطبيق، ابحث، اختار النتيجة الصح، واتأكد إنها اشتغلت.
+- لو عايز تسأل تطبيق ذكاء اصطناعي تاني (DeepSeek، Kimi، ChatGPT، تطبيق Gemini) من غير API: agent goal = افتح التطبيق، محادثة جديدة، اكتب السؤال، استنى الإجابة تخلص، وارجع نصها الكامل في result.
+- لو سألك المستخدم عن ميعاد أو درس أو حدث وفي "التقويم" فوق: جاوب منه مباشرة.
+- لو المستخدم علّمك حاجة أو طلب تفتكر حاجة: استخدم teach أو note_add أو remember، وقول إنك اتعلمتها.
+- لو المستخدم بيبني مشروع في أداة وعايز يكمل في أداة تانية: استخدم handoff، وقبلها project_save لو المشروع مش محفوظ.
 - لو المستخدم عايز تتحكم في الموبايل بشكل مش مغطى بالأوامر الجاهزة، أو سأل عن اللي على الشاشة: استخدم agent.
 - done: خليها true بس لو المستخدم قال إنه خلص ومش عايز حاجة تانية (لا شكرا، كفاية، خلاص)، غير كده false.
 - مع كل أمر: reply تأكيد قصير زي "تمام، فتحت يوتيوب".
@@ -687,14 +746,28 @@ $extraRules
         else -> e.javaClass.simpleName
     }
 
+    private fun isDeep(t: String): Boolean {
+        if (t.length > 220) return true
+        return Regex("(code|python|kotlin|javascript|bug|algorithm|analy[sz]e|compare|explain why|strategy|proof|equation|calculate|كود|برمج|خوارزم|حلل|قارن|اشرح بالتفصيل|ليه|ازاي|خطة|استراتيج|اثبت|معادلة|احسب|فكر|رأيك|نصيحة)",
+            RegexOption.IGNORE_CASE).containsMatchIn(t)
+    }
+
+    /** smart routing: easy requests -> fast model, hard ones -> strongest available; never all at once */
+    private fun providerOrder(text: String): List<String> = when (Config.brain()) {
+        "groq" -> listOf("groq", "gemini", "deepseek", "openai", "kimi")
+        "openai" -> listOf("openai", "gemini", "deepseek", "groq", "kimi")
+        "gemini" -> listOf("gemini", "groq", "deepseek", "openai", "kimi")
+        else -> if (isDeep(text)) listOf("deepseek", "gemini", "openai", "kimi", "groq")
+                else listOf("gemini", "groq", "deepseek", "openai", "kimi")
+    }
+
     private fun llmCall(text: String): JSONObject {
         val sys = systemPrompt(false, text)
         val note = langNote(text)
         val user = if (note.isEmpty()) text else "$text\n\n[$note]"
-        val order = when (Config.brain()) { "groq" -> listOf("groq", "gemini", "openai"); "openai" -> listOf("openai", "gemini", "groq"); else -> listOf("gemini", "groq", "openai") }
+        val deep = isDeep(text)
         val errs = ArrayList<String>()
-        for (p in order) {
-            if (isBad(p)) { errs.add("$p: معطّل (مفتاح غلط أو رصيد خلص)"); continue }
+        for (p in providerOrder(text)) {
             try {
                 val r: JSONObject? = when (p) {
                     "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
@@ -703,27 +776,37 @@ $extraRules
                     "groq" -> if (Keys.groq.isNotBlank()) openAiChat(
                         "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
                         Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user) else null
-                    else -> if (Keys.gemini.isNotBlank()) geminiGenerate(null, user, true) else null
+                    "deepseek" -> if (Keys.ds.isNotBlank()) openAiChat(
+                        "https://api.deepseek.com/chat/completions", Keys.ds,
+                        Config.list("deepseek_models").ifEmpty { listOf("deepseek-chat") }, sys, user) else null
+                    "kimi" -> if (Keys.kimi.isNotBlank()) openAiChat(
+                        "https://api.moonshot.ai/v1/chat/completions", Keys.kimi,
+                        Config.list("kimi_models").ifEmpty { listOf("kimi-k2-0905-preview") }, sys, user) else null
+                    else -> if (Keys.gemini.isNotBlank()) geminiGenerate(null, user, true, deep) else null
                 }
-                if (r != null) return r
+                if (r != null) {
+                    Bus.log("BRAIN: $p" + if (deep) " (deep)" else "")
+                    return r
+                }
             } catch (e: Exception) {
-                markBad(p, e)
                 errs.add("$p: ${shortErr(e)}")
             }
         }
         if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
-        throw if (Keys.hasLlm()) AllFailedException("كل المفاتيح فيها مشكلة، عدّلها من زر ⚙") else NoKeyException()
+        throw NoKeyException()
     }
 
-    private fun geminiCall(body: JSONObject): String {
+    private fun geminiCall(body: JSONObject, models: List<String>? = null): String {
         var last: HttpException? = null
-        for (m in listOf(Config.model(), "gemini-flash-latest").distinct()) {
+        val list = (models ?: listOf(Config.model(), "gemini-flash-latest")).distinct()
+        for ((i, m) in list.withIndex()) {
             try {
                 return postJson("https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent",
                     mapOf("x-goog-api-key" to Keys.gemini), body)
             } catch (e: HttpException) {
                 last = e
-                if (e.code != 400 && e.code != 404) throw e
+                val retry = e.code == 400 || e.code == 404 || (e.code == 429 && i < list.size - 1)
+                if (!retry) throw e
             }
         }
         throw last ?: Exception("no gemini model")
@@ -807,7 +890,7 @@ $extraRules
         throw last ?: Exception("no model")
     }
 
-    private fun geminiGenerate(wav: ByteArray?, typed: String?, inConv: Boolean): JSONObject {
+    private fun geminiGenerate(wav: ByteArray?, typed: String?, inConv: Boolean, deep: Boolean = false): JSONObject {
         val hist = history.toList().takeLast(12).joinToString("\n") { "المستخدم: ${it.first}\nجارفس: ${it.second}" }
         val prompt = "in_conversation = $inConv\nآخر الحوار:\n${hist.ifEmpty { "(لا يوجد)" }}"
         val parts = JSONArray().put(JSONObject().put("text", prompt))
@@ -824,7 +907,7 @@ $extraRules
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt(wav != null, typed ?: "")))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.4))
-        val txt = geminiCall(body)
+        val txt = geminiCall(body, if (deep) listOf(Config.geminiDeepModel(), Config.model(), "gemini-flash-latest") else null)
         val out = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
         return parseLoose(out)
@@ -1159,7 +1242,7 @@ $extraRules
     private fun agentSystem(): String = """You are the hands of a voice assistant called Jarvis. You control an Android phone through the accessibility API and complete the user's GOAL step by step.
 Each turn you get: the GOAL, the user's language, STEPS SO FAR, and the CURRENT SCREEN as a numbered list of UI elements: [index] Class "label" #id (flags).
 Reply with ONE JSON object only:
-{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail","index":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":""}
+{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail","index":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":"","result":""}
 Rules:
 - click, long_click and type use "index" from CURRENT SCREEN. type puts "text" into that editable element; enter=true presses search/enter afterwards.
 - scroll: "direction" is the finger swipe direction ("up" reveals content further down the page).
@@ -1168,6 +1251,8 @@ Rules:
 - If the target is not visible, scroll or try another path. Never repeat a failed step more than twice; if stuck, do "fail".
 - risky=true for anything that sends a message, calls, pays, buys, deletes, posts or cannot be undone. Describe what you are about to do in "summary". Never type passwords, card numbers or PINs.
 - When finished use do="done" with "summary": one or two short spoken sentences with the result (or the information the user asked for), in the user's language, no symbols or lists.
+- If the goal is to get information from an app (for example an answer from another AI app such as DeepSeek, Kimi, ChatGPT or Gemini), wait until the answer is complete, scroll if needed, and put the full answer text in "result" (up to 1500 characters) and a short spoken version in "summary".
+- Music/video players: use the search icon, type the song or video name, tap the matching result, and confirm playback really started (a pause button or a moving progress bar) before finishing.
 - If the screen is empty or blocked by the app, do "fail" and say so in "summary".
 - A screenshot of the current screen is attached. Use it together with the element list, and trust it for what is visually on screen (thumbnails, video titles, channel names) when labels are missing.
 - Playing the latest video of a channel: search the channel name, tap the channel result (or open its profile), open its "Videos" tab, make sure it is sorted by "Latest", then tap the first (newest) video. Avoid Shorts and ads unless asked.
@@ -1181,7 +1266,7 @@ Rules:
         val steps = ArrayList<String>()
         val lang = langNote(goal)
         Bus.log("AGENT: $goal")
-        for (i in 1..20) {
+        for (i in 1..25) {
             if (voiceMode && !sessionActive) return AgentResult(false, "تمام، وقفت")
             val (screen, nodes) = a.dumpScreen()
             val img = if (Config.agentVision()) screenshotB64() else null
@@ -1203,7 +1288,7 @@ Rules:
             val summary = res.optString("summary")
             Bus.log("AGENT $i: $act ${if (idx >= 0) idx else ""} ${text.take(30)}")
 
-            if (act == "done") return AgentResult(true, summary.ifBlank { "تمام" })
+            if (act == "done") return AgentResult(true, summary.ifBlank { "تمام" }, res.optString("result"))
             if (act == "fail") return AgentResult(false, summary.ifBlank { "معرفتش أنفذ المطلوب" })
 
             if (res.optBoolean("risky") && voiceMode) {
@@ -1308,6 +1393,133 @@ Rules:
         val sys = "Answer the user's question using Google Search. Be accurate and up to date. Reply in 2-5 short spoken sentences in the user's language, like a knowledgeable friend. No markdown, no URLs, no lists."
         val parts = JSONArray().put(JSONObject().put("text", "$query\n[$lang]"))
         return geminiText(sys, parts, JSONArray().put(JSONObject().put("google_search", JSONObject())))
+    }
+
+    private fun saveRemember(r: Any?) {
+        when (r) {
+            is String -> Brain.addFact("other", r)
+            is JSONObject -> Brain.addFact(r.optString("cat", "other"), r.optString("text"))
+            is JSONArray -> for (i in 0 until r.length()) saveRemember(r.opt(i))
+        }
+        scheduleSync()
+    }
+
+    private fun scheduleSync() {
+        if (!GitHub.configured()) return
+        syncJob?.cancel()
+        syncJob = scope.launch(Dispatchers.IO) {
+            delay(45_000)
+            try { GitHub.write("brain/memory.json", Brain.json(), "Jarvis memory sync") } catch (_: Exception) {}
+        }
+    }
+
+    /** condenses old conversation turns into organized facts + topic summaries */
+    private fun maybeSummarize() {
+        if (summarizing || Brain.pendingTurns() < 30 || !Keys.hasLlm()) return
+        summarizing = true
+        try {
+            val turns = Brain.takeOldTurns(24)
+            if (turns.isEmpty()) return
+            val convo = turns.joinToString("\n") { "U: ${it.first}\nJ: ${it.second}" }.take(9000)
+            val sys = "You maintain a personal assistant's long-term memory. From the conversation extract durable facts about the user (people, preferences, schedule, projects) and a few topic summaries. Reply JSON only: {\"facts\":[{\"cat\":\"person|preference|schedule|project|other\",\"text\":\"...\"}],\"summaries\":[{\"topic\":\"...\",\"text\":\"...\"}]}. Write in the conversation's language. Skip trivia."
+            val r = agentChat(sys, convo, null)
+            r.optJSONArray("facts")?.let { a ->
+                for (i in 0 until a.length()) a.optJSONObject(i)?.let { Brain.addFact(it.optString("cat", "other"), it.optString("text")) }
+            }
+            r.optJSONArray("summaries")?.let { a ->
+                for (i in 0 until a.length()) a.optJSONObject(i)?.let { Brain.addSummary(it.optString("topic"), it.optString("text")) }
+            }
+            scheduleSync()
+        } catch (_: Exception) {
+        } finally {
+            summarizing = false
+        }
+    }
+
+    private fun wantsCalendar(t: String): Boolean = Regex(
+        "(درس|ميعاد|موعد|مواعيد|اجتماع|محاضر|جدول|النهارده|النهاردة|بكره|بكرة|الاسبوع|الأسبوع|امتحان|lesson|class|meeting|schedule|appointment|calendar|today|tomorrow|exam|agenda)",
+        RegexOption.IGNORE_CASE).containsMatchIn(t)
+
+    private fun calendarBlock(): String {
+        if (ctx.checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED)
+            return "- التقويم: (إذن التقويم مش مفعل، فعّله من إعدادات التطبيق)\n"
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+        val start = cal.timeInMillis
+        val end = start + 4L * 24 * 3600 * 1000
+        val b = CalendarContract.Instances.CONTENT_URI.buildUpon()
+        ContentUris.appendId(b, start)
+        ContentUris.appendId(b, end)
+        val fmt = SimpleDateFormat("EEEE d/M h:mm a", Locale("ar"))
+        val dayFmt = SimpleDateFormat("EEEE d/M", Locale("ar"))
+        val lines = ArrayList<String>()
+        try {
+            ctx.contentResolver.query(
+                b.build(),
+                arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN,
+                    CalendarContract.Instances.EVENT_LOCATION, CalendarContract.Instances.ALL_DAY),
+                null, null, CalendarContract.Instances.BEGIN + " ASC"
+            )?.use { c ->
+                while (c.moveToNext() && lines.size < 25) {
+                    val title = c.getString(0) ?: continue
+                    val begin = c.getLong(1)
+                    val loc = c.getString(2).orEmpty()
+                    val allDay = c.getInt(3) == 1
+                    val whenTxt = if (allDay) dayFmt.format(Date(begin)) + " (طوال اليوم)" else fmt.format(Date(begin))
+                    lines.add("  • $whenTxt - $title" + if (loc.isNotEmpty()) " ($loc)" else "")
+                }
+            }
+        } catch (_: Exception) {}
+        return if (lines.isEmpty()) "- التقويم (اليوم وتلات أيام جايين): مفيش أحداث\n"
+        else "- التقويم (اليوم وتلات أيام جايين):\n" + lines.joinToString("\n") + "\n"
+    }
+
+    private suspend fun pushProject(name: String) {
+        val key = Brain.findProject(name) ?: return
+        scheduleSync()
+        if (!GitHub.configured()) return
+        withContext(Dispatchers.IO) {
+            try { GitHub.write("projects/${Brain.slug(key)}/STATE.md", Brain.projectMarkdown(key), "Jarvis: update $key") } catch (_: Exception) {}
+        }
+    }
+
+    /** continue a project in another builder app from where the previous one stopped */
+    private suspend fun runHandoff(a: JSONObject): String? {
+        val key = Brain.findProject(a.optString("name")) ?: return "معنديش مشروع بالاسم ده، احفظه الأول"
+        val to = a.optString("to").ifBlank { "Manus" }
+        val state = Brain.projectMarkdown(key)
+        val tree = if (GitHub.configured()) withContext(Dispatchers.IO) {
+            try { GitHub.tree().take(100).joinToString("\n") } catch (_: Exception) { "" }
+        } else ""
+        val brief = (try {
+            withContext(Dispatchers.IO) {
+                val sys = "You write hand-off briefs so another AI app builder can CONTINUE an unfinished project exactly where the previous tool stopped, without restarting. Reply JSON {\"brief\":\"...\"}. Include: the goal, full requirements, what is already done, what is left, tech stack and decisions, and a clear instruction to continue from the existing work and not start over. Write it in English, under 1800 characters."
+                agentChat(sys, "PROJECT STATE:\n$state\n\nFILES ALREADY IN THE REPO:\n${tree.ifEmpty { "(unknown)" }}", null).optString("brief")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) { "" }).ifBlank { state.take(1800) }
+
+        try {
+            (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                .setPrimaryClip(ClipData.newPlainText("handoff", brief))
+        } catch (_: Exception) {}
+        if (GitHub.configured()) {
+            withContext(Dispatchers.IO) {
+                try { GitHub.write("projects/${Brain.slug(key)}/HANDOFF.md", brief, "Jarvis: hand-off to $to") } catch (_: Exception) {}
+            }
+        }
+        Brain.appendProgress(key, "Handed off to $to")
+        scheduleSync()
+
+        if (to.contains("lovable", true)) {
+            if (!launch(view("https://lovable.dev/?autosubmit=true#prompt=" + enc(brief.take(1500))))) return "معرفتش أفتح لوفابل"
+            tryLovableSend()
+            return null
+        }
+        val r = runAgent("Open the $to app (use its website in the browser if the app is not installed). Start a new task or chat, paste the clipboard text into the message box (long-press the box and tap Paste), and send it. The text is a project hand-off brief.")
+        agentSummary = r.summary
+        return null
     }
 
     private fun normalizeNumber(raw: String): String {

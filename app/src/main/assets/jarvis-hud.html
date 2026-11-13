@@ -131,6 +131,7 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
   <div class="ig"><label>Groq Key (مجاني)</label><input type="password" id="kGroq" placeholder="gsk_..."></div>
   <div class="ig"><label>Gemini API Key (مجاني - الأفضل: عقل + صوت + شاشة)</label><input type="password" id="kGem" placeholder="AIza..."></div>
   <div class="ig" id="fishBox"><label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key"><label style="margin-top:6px">Fish Voice ID (من رابط الصوت fish.audio/m/...)</label><input type="text" id="kFishV" placeholder="Voice ID"></div>
+  <div class="ig" id="extraBox"><label>DeepSeek Key (اختياري)</label><input type="password" id="kDs" placeholder="sk-..."><label style="margin-top:6px">Kimi (Moonshot) Key (اختياري)</label><input type="password" id="kKimi" placeholder="sk-..."><label style="margin-top:6px">GitHub Token (لحفظ الذاكرة والمشاريع)</label><input type="password" id="kGh" placeholder="ghp_... / github_pat_..."><label style="margin-top:6px">GitHub Repo (owner/name)</label><input type="text" id="kGhRepo" placeholder="username/jarvis-brain"></div>
   <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
   <button id="resetKeys" onclick="resetKeys()" style="background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">RESET ALL KEYS</button>
 </div>
@@ -222,6 +223,7 @@ function saveKeys(){
   userName=$("kName").value.trim() || "Boss";
   localStorage.setItem("k_gpt",keys.gpt); localStorage.setItem("k_groq",keys.groq); localStorage.setItem("k_gem",keys.gem);
   localStorage.setItem("k_fish",$("kFish").value.trim()); localStorage.setItem("k_fishv",$("kFishV").value.trim());
+  localStorage.setItem("k_ds",$("kDs").value.trim()); localStorage.setItem("k_kimi",$("kKimi").value.trim()); localStorage.setItem("k_gh",$("kGh").value.trim()); localStorage.setItem("k_ghrepo",$("kGhRepo").value.trim());
   localStorage.setItem("jv_name",userName);
   checkKeys(); addLog("j",`Keys saved. Hello ${userName}.`);
 }
@@ -231,9 +233,9 @@ function toggleKeys(){
   if(open) p.scrollIntoView({behavior:"smooth",block:"center"});
 }
 function resetKeys(){
-  ["k_gpt","k_groq","k_gem","k_fish","k_fishv"].forEach(k=>localStorage.removeItem(k));
+  ["k_gpt","k_groq","k_gem","k_fish","k_fishv","k_ds","k_kimi","k_gh","k_ghrepo"].forEach(k=>localStorage.removeItem(k));
   keys.gpt=""; keys.groq=""; keys.gem="";
-  ["kGpt","kGroq","kGem","kFish","kFishV"].forEach(i=>{ $(i).value=""; });
+  ["kGpt","kGroq","kGem","kFish","kFishV","kDs","kKimi","kGh","kGhRepo"].forEach(i=>{ $(i).value=""; });
   checkKeys(); addLog("j","All keys cleared.");
 }
 function checkKeys(){
@@ -242,7 +244,7 @@ function checkKeys(){
   $("vAi").textContent=c?`${c} Models Ready`:"Missing";
   $("rAi").className=c?"row on":"row";
 }
-$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kGem").value=keys.gem; $("kFish").value=localStorage.getItem("k_fish")||""; $("kFishV").value=localStorage.getItem("k_fishv")||""; $("kName").value=userName; checkKeys();
+$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kGem").value=keys.gem; $("kFish").value=localStorage.getItem("k_fish")||""; $("kFishV").value=localStorage.getItem("k_fishv")||""; $("kDs").value=localStorage.getItem("k_ds")||""; $("kKimi").value=localStorage.getItem("k_kimi")||""; $("kGh").value=localStorage.getItem("k_gh")||""; $("kGhRepo").value=localStorage.getItem("k_ghrepo")||""; $("kName").value=userName; checkKeys();
 
 function getSystemPrompt() {
   return `أنت J.A.R.V.I.S. مساعد شخصي ذكي جداً. المستخدم هو "${userName}". بتناديه دايماً "${userName}" أو "يا فندم".

@@ -47,7 +47,7 @@ class MainActivity : Activity() {
         Bus.sink = { json -> push(json) }
 
         val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS,
-            Manifest.permission.CALL_PHONE, Manifest.permission.SEND_SMS)
+            Manifest.permission.CALL_PHONE, Manifest.permission.SEND_SMS, Manifest.permission.READ_CALENDAR)
         if (Build.VERSION.SDK_INT >= 33) needed.add(Manifest.permission.POST_NOTIFICATIONS)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
         val missing = needed.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
