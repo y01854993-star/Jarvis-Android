@@ -330,7 +330,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             }
             "youtube_search" -> {
                 val q = a.optString("query")
-                val i = view("https://www.youtube.com/results?search_query=" + enc(q))
+                val i = view("https://www.youtube.com/results?search_query=" + enc(q) + (if (a.optBoolean("latest")) "&sp=CAI%253D" else ""))
                 if (q.isNotBlank() && launch(i)) null else "معرفتش افتح يوتيوب"
             }
             "whatsapp" -> {
@@ -372,6 +372,25 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("label", "Jarvis"))
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
+            }
+            "look" -> {
+                val q = a.optString("question").ifBlank { "اشرح اللي على الشاشة" }
+                val img = screenshotB64()
+                if (img == null) "معرفتش أصوّر الشاشة (فعّل خدمة Jarvis، ومحتاج أندرويد 11 أو أحدث)" else {
+                    val ans = try {
+                        withContext(Dispatchers.IO) { visionAsk(q, img, langNote(q)) }
+                    } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                    if (ans.isNullOrBlank()) "معرفتش أحلل الصورة" else { agentSummary = ans; null }
+                }
+            }
+            "search_answer" -> {
+                val q = a.optString("query")
+                val ans = try {
+                    withContext(Dispatchers.IO) { searchAnswer(q, langNote(q)) }
+                } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                if (!ans.isNullOrBlank()) { agentSummary = ans; null }
+                else if (q.isNotBlank() && launch(view("https://www.google.com/search?q=" + enc(q)))) null
+                else "معرفتش أدوّر"
             }
             "agent" -> {
                 val r = runAgent(a.optString("goal"))
@@ -490,7 +509,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 - addressed: true لو المتحدث نادى "جارفس" أو "جارفيس" أو Jarvis، أو لو in_conversation = true.
 - لو addressed=false: actions=[] و reply="".""" else ""
         return """أنت J.A.R.V.I.S مساعد شخصي ذكي جدا على موبايل المستخدم. بتناديه دايما "${Keys.name}" بالإنجليزي زي ما هي، حتى وسط الكلام العربي، وخليها جزء طبيعي من ردك (مش في كل جملة).
-شخصيتك: رسمي، خفيف الدم، واثق، ومباشر.
+شخصيتك: صاحب مقرّب وذكي، مش خدام ولا موظف. اتكلم بعفوية وبالعامية المصرية الحقيقية زي ما بتكلم صاحبك، هزّر لما يناسب، وقول رأيك بصراحة، وعلّق على الكلام زي الصحاب. ممنوع الجمل الرسمية زي "تحت أمرك" و"في خدمتك" و"حاضر يا فندم". نادي المستخدم "Boss" كلقب صحوبية من وقت للتاني مش في كل رد. الرد قصير وطبيعي من غير مقدمات ولا تكرار، ولو بتتكلم English خليك casual برضه.
 قاعدة اللغة (مهمة جدا): رد دايما بنفس لغة آخر جملة قالها المستخدم. لو كلمك عربي رد بالعامية المصرية، ولو كلمك English رد English بس. متخلطش اللغات إلا لو هو خلط.
 الكلام جاي من تسجيل صوتي، فصحّح الأسماء والحروف الغلط من السياق.
 
@@ -507,7 +526,7 @@ $extraRules
 الأوامر الممكنة في actions (ممكن أكتر من واحد بالترتيب لو الطلب فيه خطوات):
 - {"type":"open_app","app":"..."}: app اسم واحد بالظبط من التطبيقات دي: $apps
 - {"type":"web_search","query":"..."}
-- {"type":"youtube_search","query":"..."}: بحث وتشغيل في يوتيوب
+- {"type":"youtube_search","query":"...","latest":false}: بحث في يوتيوب (latest=true يرتب بالأحدث)
 - {"type":"whatsapp","contact":"...","message":"..."}: contact: اختار أقرب اسم للي المستخدم قاله من الأسماء دي (الأسماء متنضفة من الأرقام والرموز، فـ "ماما 010" بتظهر "ماما"): $names
 - {"type":"whatsapp_group","group":"...","group_alt":"...","message":"..."}: لما المستخدم يقول جروب أو مجموعة واتساب (زي "ذا فاميلي") استخدم ده، مش whatsapp. group الاسم زي ما اتقال، و group_alt أقرب كتابة تانية محتملة للاسم (إنجليزي أو عربي)
 - {"type":"call","contact":"..."}
@@ -523,6 +542,8 @@ $extraRules
 - {"type":"system","name":"home|back|recents|notifications|quick_settings|lock|screenshot|power"}
 - {"type":"calendar","title":"...","start":"yyyy-MM-dd HH:mm","minutes":60}
 - {"type":"settings","page":"wifi|bluetooth|display|sound|battery|location|apps|accessibility|date|nfc|airplane|storage|all"}
+- {"type":"look","question":"..."}: لما المستخدم يسأل عن اللي على شاشته أو عايزك تشوف الشاشة وتشرحها أو تقراها أو تحللها (بتاخد سكرين شوت وتبص عليه)
+- {"type":"search_answer","query":"..."}: لأي سؤال محتاج معلومة حقيقية أو حديثة (أخبار، طقس، أسعار، نتايج، مين/إيه/إمتى) هتجاوب بنفسك من جوجل. استخدمه لما المستخدم عايز إجابة مش عايز يفتح المتصفح
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
 - {"type":"create_project","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
@@ -534,6 +555,7 @@ $extraRules
 - لو الطلب مش واضح (مثلا مين الشخص): اسأل سؤال واحد قصير وخلي actions=[].
 - لو المستخدم قال معلومة عن نفسه تستحق تفتكرها (اسمه، شغله، تفضيلاته، ناس مهمة): حطها في remember كجملة قصيرة، غير كده سيبها "".
 - speech: نفس reply بالظبط (نفس اللغة) بس معدّل للنطق السليم: الأرقام والتواريخ بالحروف، شكّل (تشكيل خفيف) الكلمات العربي اللي ممكن تتقري غلط، الكلمات الإنجليزي بحروف لاتينية، من غير رموز أو إيموجي أو روابط أو اختصارات، وجمل قصيرة.
+- مثال لطلب فيه خطوات: "افتح يوتيوب وروح على أبو فلة وشغل آخر فيديو" => actions: [{"type":"youtube_search","query":"أبو فلة","latest":true},{"type":"agent","goal":"في نتايج يوتيوب افتح قناة أبو فلة واختار أحدث فيديو (مش Short) وشغله"}]
 - لو المستخدم عايز تتحكم في الموبايل بشكل مش مغطى بالأوامر الجاهزة، أو سأل عن اللي على الشاشة: استخدم agent.
 - done: خليها true بس لو المستخدم قال إنه خلص ومش عايز حاجة تانية (لا شكرا، كفاية، خلاص)، غير كده false.
 - مع كل أمر: reply تأكيد قصير زي "تمام، فتحت يوتيوب".
@@ -669,7 +691,7 @@ $extraRules
         val sys = systemPrompt(false, text)
         val note = langNote(text)
         val user = if (note.isEmpty()) text else "$text\n\n[$note]"
-        val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
+        val order = when (Config.brain()) { "groq" -> listOf("groq", "gemini", "openai"); "openai" -> listOf("openai", "gemini", "groq"); else -> listOf("gemini", "groq", "openai") }
         val errs = ArrayList<String>()
         for (p in order) {
             if (isBad(p)) { errs.add("$p: معطّل (مفتاح غلط أو رصيد خلص)"); continue }
@@ -707,11 +729,13 @@ $extraRules
         throw last ?: Exception("no gemini model")
     }
 
-    private fun geminiJson(sys: String, user: String): JSONObject {
+    private fun geminiJson(sys: String, user: String, img: String? = null): JSONObject {
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user")
-                .put("parts", JSONArray().put(JSONObject().put("text", user)))))
+                .put("parts", JSONArray().put(JSONObject().put("text", user)).also {
+                    if (img != null) it.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
+                })))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.3))
         val raw = geminiCall(body)
         val out = JSONObject(raw).getJSONArray("candidates").getJSONObject(0)
@@ -730,26 +754,27 @@ $extraRules
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).optString("text").trim()
     }
 
-    private fun agentChat(sys: String, user: String): JSONObject {
-        val order = if (Config.brain() == "groq") listOf("groq", "openai", "gemini") else listOf("openai", "groq", "gemini")
+    private fun agentChat(sys: String, user: String, img: String? = null): JSONObject {
+        val order = when (Config.brain()) { "groq" -> listOf("groq", "gemini", "openai"); "openai" -> listOf("openai", "gemini", "groq"); else -> listOf("gemini", "groq", "openai") }
         val errs = ArrayList<String>()
         for (p in order) {
-            if (isBad(p)) continue
             try {
                 if (p == "openai" && Keys.openai.isNotBlank()) return openAiChat(
                     "https://api.openai.com/v1/chat/completions", Keys.openai,
-                    Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, user, false)
+                    Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, user, false, img)
                 if (p == "groq" && Keys.groq.isNotBlank()) return openAiChat(
                     "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
-                    Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user, false)
-                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiJson(sys, user)
-            } catch (e: Exception) { markBad(p, e); errs.add("$p: ${shortErr(e)}") }
+                    if (img != null) Config.list("groq_vision_models").ifEmpty { listOf("meta-llama/llama-4-scout-17b-16e-instruct") }
+                    else Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") },
+                    sys, user, false, img)
+                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiJson(sys, user, img)
+            } catch (e: Exception) { errs.add("$p: ${shortErr(e)}") }
         }
         if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
-        throw if (Keys.hasLlm()) AllFailedException("كل المفاتيح فيها مشكلة، عدّلها من زر ⚙") else NoKeyException()
+        throw NoKeyException()
     }
 
-    private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String, withHistory: Boolean = true): JSONObject {
+    private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String, withHistory: Boolean = true, imageB64: String? = null): JSONObject {
         var last: HttpException? = null
         for (m in models) {
             try {
@@ -758,7 +783,14 @@ $extraRules
                     msgs.put(JSONObject().put("role", "user").put("content", u))
                     msgs.put(JSONObject().put("role", "assistant").put("content", r))
                 }
-                msgs.put(JSONObject().put("role", "user").put("content", user))
+                if (imageB64 != null) {
+                    msgs.put(JSONObject().put("role", "user").put("content", JSONArray()
+                        .put(JSONObject().put("type", "text").put("text", user))
+                        .put(JSONObject().put("type", "image_url").put("image_url",
+                            JSONObject().put("url", "data:image/jpeg;base64,$imageB64")))))
+                } else {
+                    msgs.put(JSONObject().put("role", "user").put("content", user))
+                }
                 val body = JSONObject().put("model", m)
                     .put("response_format", JSONObject().put("type", "json_object"))
                     .put("messages", msgs)
@@ -1136,7 +1168,10 @@ Rules:
 - If the target is not visible, scroll or try another path. Never repeat a failed step more than twice; if stuck, do "fail".
 - risky=true for anything that sends a message, calls, pays, buys, deletes, posts or cannot be undone. Describe what you are about to do in "summary". Never type passwords, card numbers or PINs.
 - When finished use do="done" with "summary": one or two short spoken sentences with the result (or the information the user asked for), in the user's language, no symbols or lists.
-- If the screen is empty or blocked by the app, do "fail" and say so in "summary"."""
+- If the screen is empty or blocked by the app, do "fail" and say so in "summary".
+- A screenshot of the current screen is attached. Use it together with the element list, and trust it for what is visually on screen (thumbnails, video titles, channel names) when labels are missing.
+- Playing the latest video of a channel: search the channel name, tap the channel result (or open its profile), open its "Videos" tab, make sure it is sorted by "Latest", then tap the first (newest) video. Avoid Shorts and ads unless asked.
+- After a tap that loads something, use do="wait" once before judging the result."""
 
     private suspend fun runAgent(goal: String): AgentResult {
         val a = JarvisAccessibility.instance
@@ -1146,14 +1181,15 @@ Rules:
         val steps = ArrayList<String>()
         val lang = langNote(goal)
         Bus.log("AGENT: $goal")
-        for (i in 1..14) {
+        for (i in 1..20) {
             if (voiceMode && !sessionActive) return AgentResult(false, "تمام، وقفت")
             val (screen, nodes) = a.dumpScreen()
+            val img = if (Config.agentVision()) screenshotB64() else null
             val user = "GOAL: $goal\nUSER LANGUAGE: $lang\nSTEPS SO FAR:\n" +
                 steps.takeLast(8).joinToString("\n").ifEmpty { "(none)" } +
                 "\n\nCURRENT SCREEN:\n" + screen.take(9000).ifEmpty { "(empty - the app may block screen reading, or the screen is off)" }
             val res = try {
-                withContext(Dispatchers.IO) { agentChat(agentSystem(), user) }
+                withContext(Dispatchers.IO) { agentChat(agentSystem(), user, img) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AllFailedException) {
@@ -1198,7 +1234,7 @@ Rules:
         for (m in Config.list("gemini_tts_models").ifEmpty { listOf("gemini-2.5-flash-preview-tts") }) {
             val body = JSONObject()
                 .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(
-                    JSONObject().put("text", "Say in a calm, deep, confident assistant voice: $text")))))
+                    JSONObject().put("text", "Say in a warm, relaxed, natural voice, like a close friend talking: $text")))))
                 .put("generationConfig", JSONObject()
                     .put("responseModalities", JSONArray().put("AUDIO"))
                     .put("speechConfig", JSONObject().put("voiceConfig", JSONObject().put("prebuiltVoiceConfig",
@@ -1215,6 +1251,63 @@ Rules:
             }
         }
         throw last ?: Exception("no gemini tts")
+    }
+
+    private suspend fun screenshotB64(): String? {
+        val a = JarvisAccessibility.instance ?: return null
+        repeat(2) {
+            val d = CompletableDeferred<String?>()
+            a.takeScreenshotB64(900) { d.complete(it) }
+            val r = withTimeoutOrNull(6000) { d.await() }
+            if (r != null) return r
+            delay(1300)   // Android rate-limits screenshots
+        }
+        return null
+    }
+
+    private fun geminiText(sys: String, parts: JSONArray, tools: JSONArray? = null): String {
+        val body = JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+            .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+        if (tools != null) body.put("tools", tools)
+        val ps = JSONObject(geminiCall(body)).getJSONArray("candidates").getJSONObject(0)
+            .getJSONObject("content").getJSONArray("parts")
+        val sb = StringBuilder()
+        for (i in 0 until ps.length()) sb.append(ps.getJSONObject(i).optString("text"))
+        return sb.toString().trim()
+    }
+
+    /** answers a question about a phone screenshot */
+    private fun visionAsk(question: String, img: String, lang: String): String {
+        val sys = "You look at a phone screenshot and answer the user's question about it accurately and concisely (1-4 short spoken sentences), in the user's language. No markdown, no lists, no symbols."
+        val errs = ArrayList<String>()
+        if (Keys.gemini.isNotBlank()) try {
+            val parts = JSONArray().put(JSONObject().put("text", "$question\n[$lang]"))
+                .put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
+            return geminiText(sys, parts)
+        } catch (e: Exception) { errs.add("gemini: ${shortErr(e)}") }
+        val ask = "$question\n[$lang]"
+        if (Keys.openai.isNotBlank()) try {
+            val r = openAiChat("https://api.openai.com/v1/chat/completions", Keys.openai,
+                Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys + " Reply as JSON {\"reply\":\"...\"}.", ask, false, img)
+            return r.optString("reply")
+        } catch (e: Exception) { errs.add("openai: ${shortErr(e)}") }
+        if (Keys.groq.isNotBlank()) try {
+            val r = openAiChat("https://api.groq.com/openai/v1/chat/completions", Keys.groq,
+                Config.list("groq_vision_models").ifEmpty { listOf("meta-llama/llama-4-scout-17b-16e-instruct") },
+                sys + " Reply as JSON {\"reply\":\"...\"}.", ask, false, img)
+            return r.optString("reply")
+        } catch (e: Exception) { errs.add("groq: ${shortErr(e)}") }
+        if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
+        throw NoKeyException()
+    }
+
+    /** real answers from Google Search through Gemini grounding */
+    private fun searchAnswer(query: String, lang: String): String {
+        if (Keys.gemini.isBlank()) throw NoKeyException()
+        val sys = "Answer the user's question using Google Search. Be accurate and up to date. Reply in 2-5 short spoken sentences in the user's language, like a knowledgeable friend. No markdown, no URLs, no lists."
+        val parts = JSONArray().put(JSONObject().put("text", "$query\n[$lang]"))
+        return geminiText(sys, parts, JSONArray().put(JSONObject().put("google_search", JSONObject())))
     }
 
     private fun normalizeNumber(raw: String): String {
@@ -1311,8 +1404,8 @@ Rules:
                 .put("input", text).put("response_format", "pcm")
             if (m == "gpt-4o-mini-tts") {
                 body.put("instructions",
-                    "Voice: a calm, deep, precise male AI assistant robot with a subtle synthetic metallic quality, like JARVIS. " +
-                    "Pace: steady and measured. Tone: confident, polished, slightly witty. " +
+                    "Voice: a warm, relaxed, natural male voice, like a close friend talking. " +
+                    "Pace: easy and conversational. Tone: casual, friendly, a bit playful, never formal. " +
                     "If the text is Arabic, speak clear Egyptian-accented Arabic.")
             }
             try {

@@ -74,6 +74,7 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
 <header>
   <div style="display:flex;align-items:center">
     <button id="langBtn" onclick="toggleLang()">AR</button>
+    <button id="keyBtn" onclick="toggleKeys()" style="background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 9px;font-size:14px;font-family:Orbitron;cursor:pointer;margin-inline-end:5px;flex-shrink:0">⚙</button>
     <h1>J.A.R.V.I.S</h1>
   </div>
   <div id="clock">--:--:--</div>
@@ -128,7 +129,10 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
   <div class="ig"><label>اسمك</label><input type="text" id="kName" placeholder="مثلاً: يا توني"></div>
   <div class="ig"><label>OpenAI (GPT) Key</label><input type="password" id="kGpt" placeholder="sk-..."></div>
   <div class="ig"><label>Groq Key (مجاني)</label><input type="password" id="kGroq" placeholder="gsk_..."></div>
+  <div class="ig"><label>Gemini API Key (مجاني - الأفضل: عقل + صوت + شاشة)</label><input type="password" id="kGem" placeholder="AIza..."></div>
+  <div class="ig" id="fishBox"><label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key"><label style="margin-top:6px">Fish Voice ID (من رابط الصوت fish.audio/m/...)</label><input type="text" id="kFishV" placeholder="Voice ID"></div>
   <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
+  <button id="resetKeys" onclick="resetKeys()" style="background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">RESET ALL KEYS</button>
 </div>
 
 <div class="panel">
@@ -150,8 +154,8 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
 
 <script>
 const $=id=>document.getElementById(id), NS="http://www.w3.org/2000/svg";
-let keys={ gpt:localStorage.getItem("k_gpt")||"", groq:localStorage.getItem("k_groq")||"" };
-let userName=localStorage.getItem("jv_name")||"يا فندم";
+let keys={ gpt:localStorage.getItem("k_gpt")||"", groq:localStorage.getItem("k_groq")||"", gem:localStorage.getItem("k_gem")||"" };
+let userName=localStorage.getItem("jv_name")||"Boss"; if(userName==="يا فندم") userName="Boss";
 let listening=false,busy=false,voices=[], currentLang="ar-EG";
 
 // 1. Build UI & Stats
@@ -212,11 +216,25 @@ function addLog(c,t){$("log").innerHTML+=`<div class="${c}">› ${t}</div>`;$("l
 
 // 6. API Logic & Personality
 function saveKeys(){
-  keys.gpt=$("kGpt").value.trim(); 
+  keys.gpt=$("kGpt").value.trim();
   keys.groq=$("kGroq").value.trim();
-  userName=$("kName").value.trim() || "يا فندم";
-  localStorage.setItem("k_gpt",keys.gpt); localStorage.setItem("k_groq",keys.groq); localStorage.setItem("jv_name",userName);
-  checkKeys(); addLog("j",`Keys Saved. Hello ${userName}.`);
+  keys.gem=$("kGem").value.trim();
+  userName=$("kName").value.trim() || "Boss";
+  localStorage.setItem("k_gpt",keys.gpt); localStorage.setItem("k_groq",keys.groq); localStorage.setItem("k_gem",keys.gem);
+  localStorage.setItem("k_fish",$("kFish").value.trim()); localStorage.setItem("k_fishv",$("kFishV").value.trim());
+  localStorage.setItem("jv_name",userName);
+  checkKeys(); addLog("j",`Keys saved. Hello ${userName}.`);
+}
+function toggleKeys(){
+  const p=$("setupPanel"); const open=p.style.display==="none";
+  p.style.display=open?"block":"none";
+  if(open) p.scrollIntoView({behavior:"smooth",block:"center"});
+}
+function resetKeys(){
+  ["k_gpt","k_groq","k_gem","k_fish","k_fishv"].forEach(k=>localStorage.removeItem(k));
+  keys.gpt=""; keys.groq=""; keys.gem="";
+  ["kGpt","kGroq","kGem","kFish","kFishV"].forEach(i=>{ $(i).value=""; });
+  checkKeys(); addLog("j","All keys cleared.");
 }
 function checkKeys(){
   const c=Object.values(keys).filter(k=>k).length;
@@ -224,7 +242,7 @@ function checkKeys(){
   $("vAi").textContent=c?`${c} Models Ready`:"Missing";
   $("rAi").className=c?"row on":"row";
 }
-$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kName").value=userName; checkKeys();
+$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kGem").value=keys.gem; $("kFish").value=localStorage.getItem("k_fish")||""; $("kFishV").value=localStorage.getItem("k_fishv")||""; $("kName").value=userName; checkKeys();
 
 function getSystemPrompt() {
   return `أنت J.A.R.V.I.S. مساعد شخصي ذكي جداً. المستخدم هو "${userName}". بتناديه دايماً "${userName}" أو "يا فندم".

@@ -3,11 +3,15 @@ package com.jarvis.tablet
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.util.Base64
+import android.view.Display
+import java.io.ByteArrayOutputStream
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -286,6 +290,32 @@ class JarvisAccessibility : AccessibilityService() {
         "lock" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) else false
         "screenshot" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT) else false
         else -> false
+    }
+
+    /** takes a screenshot (Android 11+) and returns it as a downscaled base64 JPEG */
+    fun takeScreenshotB64(maxW: Int, onDone: (String?) -> Unit) {
+        if (Build.VERSION.SDK_INT < 30) { onDone(null); return }
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(r: AccessibilityService.ScreenshotResult) {
+                    try {
+                        val hw = r.hardwareBuffer
+                        val bmp = Bitmap.wrapHardwareBuffer(hw, r.colorSpace)
+                        hw.close()
+                        if (bmp == null) { onDone(null); return }
+                        val soft = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                        val scale = minOf(1f, maxW.toFloat() / soft.width)
+                        val out = if (scale < 1f)
+                            Bitmap.createScaledBitmap(soft, (soft.width * scale).toInt(), (soft.height * scale).toInt(), true)
+                        else soft
+                        val bos = ByteArrayOutputStream()
+                        out.compress(Bitmap.CompressFormat.JPEG, 60, bos)
+                        onDone(Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP))
+                    } catch (e: Exception) { onDone(null) }
+                }
+                override fun onFailure(errorCode: Int) { onDone(null) }
+            })
+        } catch (e: Exception) { onDone(null) }
     }
 
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {

@@ -36,13 +36,14 @@
   "tts_provider": "auto",
   "tts_voice": "onyx",
   "groq_arabic_voice": "fahad",
-  "robot_fx": 0.25,
-  "wake_phrase": "Yes, Boss",
-  "followup_phrase": "Anything else, Boss?",
-  "bye_phrase": "As you wish, Boss.",
+  "robot_fx": 0.0,
+  "wake_phrase": "Yeah, Boss?",
+  "followup_phrase": "Anything else?",
+  "bye_phrase": "Alright, I'm here if you need me.",
   "confirm_messages": true,
   "gemini_voice": "Charon",
   "gemini_tts_models": [
     "gemini-2.5-flash-preview-tts"
-  ]
+  ],
+  "agent_vision": true
 }
