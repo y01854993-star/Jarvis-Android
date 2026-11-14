@@ -84,6 +84,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var agentSummary: String? = null
     @Volatile private var lastToolResult = ""
     private var summarizing = false
+    private var indexing = false
     private var syncJob: Job? = null
     private val deviceStt by lazy { DeviceStt(ctx) }
     private class AgentResult(val ok: Boolean, val summary: String, val result: String = "")
@@ -337,7 +338,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             speak(if (reply == modelReply && sp.isNotEmpty()) sp else reply, false, reply)
         }
         lastInteraction = System.currentTimeMillis()
-        scope.launch(Dispatchers.IO) { maybeSummarize() }
+        scope.launch(Dispatchers.IO) { maybeSummarize(); indexMemory() }
         return res.optBoolean("done")
     }
 
@@ -548,7 +549,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         val now = SimpleDateFormat("EEEE d MMMM yyyy، h:mm a", Locale("ar")).format(Date())
         val facts = Brain.profile(18).joinToString("\n") { "- $it" }.ifEmpty { "(لسه مفيش)" }
         val rulesTxt = Brain.rules(15)
-        val rel = Brain.relevant(userText, 6)
+        val qEmb = if (userText.length >= 12 && Keys.gemini.isNotBlank() && !(Keys.localOn && Keys.localOnly) && isOnline()) embed(userText) else null
+        val rel = Brain.relevant(userText, 6, qEmb)
         val brainBlock = buildString {
             if (rulesTxt.isNotEmpty()) append("- قواعد علّمهالك المستخدم (التزم بيها):\n").append(rulesTxt.joinToString("\n") { "  • $it" }).append("\n")
             if (rel.isNotEmpty()) append("- معلومات من الذاكرة والمذكرات ممكن تفيد في الرد:\n").append(rel.joinToString("\n") { "  • $it" }).append("\n")
@@ -1280,6 +1282,25 @@ Rules:
 - After a tap that loads something, use do="wait" once before judging the result."""
 
     private suspend fun runAgent(goal: String): AgentResult {
+        val trace = ArrayList<String>()
+        val hints = Brain.skillsFor(goal, 3).joinToString("\n")
+        val r = runAgentCore(goal, trace, hints)
+        if (trace.isNotEmpty()) Brain.addSkill(goal, trace, r.ok, if (r.ok) "" else r.summary)
+        return r
+    }
+
+    private fun traceStep(act: String, node: android.view.accessibility.AccessibilityNodeInfo?, app: String, dir: String): String {
+        val label = (node?.text?.toString()?.takeIf { it.isNotBlank() } ?: node?.contentDescription?.toString() ?: "").take(30)
+        return when (act) {
+            "open_app" -> "open_app $app"
+            "click", "long_click" -> "$act \"$label\""
+            "type" -> "type <text>"
+            "scroll" -> "scroll $dir"
+            else -> act
+        }
+    }
+
+    private suspend fun runAgentCore(goal: String, trace: MutableList<String>, hints: String): AgentResult {
         val a = JarvisAccessibility.instance
             ?: return AgentResult(false, "فعّل خدمة Jarvis من إمكانية الوصول عشان أقدر أتحكم في الموبايل")
         if (goal.isBlank()) return AgentResult(false, "مفهمتش المطلوب")
@@ -1291,7 +1312,9 @@ Rules:
             if (voiceMode && !sessionActive) return AgentResult(false, "تمام، وقفت")
             val (screen, nodes) = a.dumpScreen()
             val img = if (Config.agentVision()) screenshotB64() else null
-            val user = "GOAL: $goal\nUSER LANGUAGE: $lang\nSTEPS SO FAR:\n" +
+            val user = "GOAL: $goal\nUSER LANGUAGE: $lang\n" +
+                (if (hints.isNotEmpty()) "PAST EXPERIENCE (may help; screens can differ):\n$hints\n" else "") +
+                "STEPS SO FAR:\n" +
                 steps.takeLast(8).joinToString("\n").ifEmpty { "(none)" } +
                 "\n\nCURRENT SCREEN:\n" + screen.take(9000).ifEmpty { "(empty - the app may block screen reading, or the screen is off)" }
             val res = try {
@@ -1330,6 +1353,7 @@ Rules:
                 else -> false
             }
             steps.add("$i. $act ${if (idx >= 0) idx else ""} ${text.take(40)} -> ${if (ok) "ok" else "FAILED"}")
+            if (ok && act != "wait") trace.add(traceStep(act, node, res.optString("app"), res.optString("direction", "up")))
             delay(if (act == "open_app") 1800 else 1100)
         }
         return AgentResult(false, "مخلصتش المهمة في الخطوات المسموحة")
@@ -1656,6 +1680,50 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
                     ctx.startActivity(Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 } catch (_: Exception) {}
             }
+        }
+    }
+
+    /** meaning vector for semantic memory (Gemini embeddings, free tier) */
+    private fun embed(text: String): FloatArray? {
+        if (Keys.gemini.isBlank()) return null
+        for (m in listOf("gemini-embedding-001", "text-embedding-004")) {
+            try {
+                val body = JSONObject().put("model", "models/$m")
+                    .put("content", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", text.take(1500)))))
+                    .put("outputDimensionality", 256)
+                val raw = postJson("https://generativelanguage.googleapis.com/v1beta/models/$m:embedContent",
+                    mapOf("x-goog-api-key" to Keys.gemini), body, 4000, 8000)
+                val v = JSONObject(raw).getJSONObject("embedding").getJSONArray("values")
+                return FloatArray(v.length()) { v.getDouble(it).toFloat() }
+            } catch (e: HttpException) {
+                if (e.code != 400 && e.code != 404) return null
+            } catch (_: Exception) {
+                return null
+            }
+        }
+        return null
+    }
+
+    /** gives every saved fact/note/summary a meaning vector, a few at a time, in the background */
+    private fun indexMemory() {
+        if (indexing || Keys.gemini.isBlank() || !isOnline() || (Keys.localOn && Keys.localOnly)) return
+        indexing = true
+        try {
+            var guard = 0
+            while (guard++ < 6) {
+                val batch = Brain.unindexed(8)
+                if (batch.isEmpty()) break
+                var any = false
+                for ((_, id, text) in batch) {
+                    val v = embed(text) ?: continue
+                    Brain.setEmb(id, v)
+                    any = true
+                }
+                if (!any) break
+            }
+        } catch (_: Exception) {
+        } finally {
+            indexing = false
         }
     }
 

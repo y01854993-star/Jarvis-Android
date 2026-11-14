@@ -3,19 +3,29 @@ package com.jarvis.tablet
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.EOFException
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
  * Long-term, organized memory: facts (by category), taught rules, searchable notes,
- * conversation summaries, raw recent turns, and project states (for hand-offs).
+ * conversation summaries, recent turns, project states, learned screen-task skills,
+ * and optional semantic vectors (Gemini embeddings) for meaning-based recall.
  */
 object Brain {
     private lateinit var file: File
+    private lateinit var embFile: File
     private var data = JSONObject()
     private var loaded = false
+    private var idc = 0L
+    private val emb = HashMap<Long, FloatArray>()
 
     fun norm(src: String): String {
         val sb = StringBuilder()
@@ -41,9 +51,19 @@ object Brain {
     fun init(ctx: Context) {
         if (loaded) return
         file = File(ctx.filesDir, "brain.json")
+        embFile = File(ctx.filesDir, "brain_emb.dat")
         data = try { if (file.exists()) JSONObject(file.readText()) else JSONObject() } catch (_: Exception) { JSONObject() }
-        for (k in listOf("facts", "rules", "notes", "sums", "turns")) if (!data.has(k)) data.put(k, JSONArray())
+        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills")) if (!data.has(k)) data.put(k, JSONArray())
         if (!data.has("projects")) data.put("projects", JSONObject())
+        idc = System.currentTimeMillis()
+        for (k in listOf("facts", "notes", "sums")) {
+            val a = arr(k)
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                if (!o.has("id")) o.put("id", ++idc) else idc = maxOf(idc, o.optLong("id"))
+            }
+        }
+        loadEmb()
         loaded = true
         if (!data.optBoolean("migrated")) {
             try {
@@ -55,6 +75,7 @@ object Brain {
         }
     }
 
+    private fun newId(): Long = ++idc
     private fun arr(k: String): JSONArray = data.getJSONArray(k)
     private fun cap(a: JSONArray, max: Int) { while (a.length() > max) a.remove(0) }
     private fun stamp(): String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
@@ -65,13 +86,68 @@ object Brain {
     @Synchronized
     fun json(): String = data.toString(2)
 
+    // ------------------------------------------------------------ semantic vectors
+    private fun loadEmb() {
+        if (!embFile.exists()) return
+        try {
+            DataInputStream(BufferedInputStream(FileInputStream(embFile))).use { s ->
+                while (true) {
+                    val id = s.readLong()
+                    val n = s.readInt()
+                    if (n <= 0 || n > 4096) break
+                    emb[id] = FloatArray(n) { s.readFloat() }
+                }
+            }
+        } catch (_: EOFException) {
+        } catch (_: Exception) {}
+    }
+
+    @Synchronized
+    fun setEmb(id: Long, v: FloatArray) {
+        emb[id] = v
+        try {
+            DataOutputStream(FileOutputStream(embFile, true)).use { o ->
+                o.writeLong(id); o.writeInt(v.size)
+                for (f in v) o.writeFloat(f)
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** items that still have no vector: (kind, id, text) */
+    @Synchronized
+    fun unindexed(limit: Int): List<Triple<String, Long, String>> {
+        val out = ArrayList<Triple<String, Long, String>>()
+        fun scan(kind: String, textOf: (JSONObject) -> String) {
+            val a = arr(kind)
+            var i = a.length() - 1
+            while (i >= 0 && out.size < limit) {
+                val o = a.getJSONObject(i)
+                val id = o.optLong("id")
+                if (id != 0L && !emb.containsKey(id)) out.add(Triple(kind, id, textOf(o)))
+                i--
+            }
+        }
+        scan("notes") { it.optString("ti") + ". " + it.optString("t") }
+        scan("facts") { it.optString("t") }
+        scan("sums") { it.optString("tp") + ". " + it.optString("t") }
+        return out.take(limit)
+    }
+
+    private fun cosine(a: FloatArray, b: FloatArray): Double {
+        var d = 0.0; var na = 0.0; var nb = 0.0
+        val n = minOf(a.size, b.size)
+        for (i in 0 until n) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+        return if (na == 0.0 || nb == 0.0) 0.0 else d / (Math.sqrt(na) * Math.sqrt(nb))
+    }
+
+    // ------------------------------------------------------------ writes
     @Synchronized
     fun addFact(cat: String, text: String) {
         val t = text.trim()
         if (t.isEmpty()) return
         val a = arr("facts")
         for (i in 0 until a.length()) if (a.getJSONObject(i).optString("t").equals(t, true)) return
-        a.put(JSONObject().put("c", cat.ifBlank { "other" }).put("t", t).put("ts", System.currentTimeMillis()))
+        a.put(JSONObject().put("id", newId()).put("c", cat.ifBlank { "other" }).put("t", t).put("ts", System.currentTimeMillis()))
         cap(a, 250); save()
     }
 
@@ -87,7 +163,7 @@ object Brain {
     fun addNote(title: String, text: String, tags: String) {
         if (text.isBlank() && title.isBlank()) return
         val a = arr("notes")
-        a.put(JSONObject().put("ti", title.trim()).put("t", text.trim()).put("tg", tags.trim()).put("ts", System.currentTimeMillis()))
+        a.put(JSONObject().put("id", newId()).put("ti", title.trim()).put("t", text.trim()).put("tg", tags.trim()).put("ts", System.currentTimeMillis()))
         cap(a, 400); save()
     }
 
@@ -95,7 +171,7 @@ object Brain {
     fun addSummary(topic: String, text: String) {
         if (text.isBlank()) return
         val a = arr("sums")
-        a.put(JSONObject().put("tp", topic.trim()).put("t", text.trim()).put("ts", System.currentTimeMillis()))
+        a.put(JSONObject().put("id", newId()).put("tp", topic.trim()).put("t", text.trim()).put("ts", System.currentTimeMillis()))
         cap(a, 150); save()
     }
 
@@ -123,6 +199,7 @@ object Brain {
         return out
     }
 
+    // ------------------------------------------------------------ reads
     @Synchronized
     fun profile(limit: Int): List<String> {
         val a = arr("facts")
@@ -148,31 +225,35 @@ object Brain {
         return out
     }
 
+    /** keyword match + (when vectors exist) meaning match */
     @Synchronized
-    fun relevant(query: String, limit: Int): List<String> {
+    fun relevant(query: String, limit: Int, qEmb: FloatArray? = null): List<String> {
         val toks = norm(query).split(" ").map { it.removePrefix("ال") }.filter { it.length >= 3 }.toSet()
-        if (toks.isEmpty()) return emptyList()
-        val cands = ArrayList<Pair<Int, String>>()
-        fun consider(hay: String, shown: String) {
-            val h = norm(hay)
-            val s = toks.count { h.contains(it) }
-            if (s > 0) cands.add(s to shown)
+        if (toks.isEmpty() && qEmb == null) return emptyList()
+        val cands = ArrayList<Pair<Double, String>>()
+        fun consider(id: Long, hay: String, shown: String) {
+            val kw = if (toks.isEmpty()) 0 else { val h = norm(hay); toks.count { h.contains(it) } }
+            val v = emb[id]
+            val cos = if (qEmb != null && v != null) cosine(qEmb, v) else 0.0
+            val sem = if (cos > 0.55) (cos - 0.5) * 12.0 else 0.0
+            val score = kw + sem
+            if (score > 0) cands.add(score to shown)
         }
         val notes = arr("notes")
         for (i in 0 until notes.length()) {
             val o = notes.getJSONObject(i)
-            consider(o.optString("ti") + " " + o.optString("t") + " " + o.optString("tg"),
+            consider(o.optLong("id"), o.optString("ti") + " " + o.optString("t") + " " + o.optString("tg"),
                 "مذكرة «" + o.optString("ti") + "»: " + o.optString("t").take(400))
         }
         val sums = arr("sums")
         for (i in 0 until sums.length()) {
             val o = sums.getJSONObject(i)
-            consider(o.optString("tp") + " " + o.optString("t"), "ملخص (" + o.optString("tp") + "): " + o.optString("t").take(400))
+            consider(o.optLong("id"), o.optString("tp") + " " + o.optString("t"), "ملخص (" + o.optString("tp") + "): " + o.optString("t").take(400))
         }
         val facts = arr("facts")
         for (i in 0 until facts.length()) {
             val o = facts.getJSONObject(i)
-            consider(o.optString("t"), "[" + o.optString("c") + "] " + o.optString("t"))
+            consider(o.optLong("id"), o.optString("t"), "[" + o.optString("c") + "] " + o.optString("t"))
         }
         return cands.sortedByDescending { it.first }.take(limit).map { it.second }
     }
@@ -194,6 +275,37 @@ object Brain {
         }
         if (n > 0) save()
         return n
+    }
+
+    // ------------------------------------------------------------ learned screen-task skills
+    @Synchronized
+    fun addSkill(goal: String, steps: List<String>, ok: Boolean, note: String) {
+        if (steps.isEmpty()) return
+        val a = arr("skills")
+        a.put(JSONObject().put("g", goal.take(160)).put("st", JSONArray(steps.take(30)))
+            .put("ok", ok).put("n", note.take(160)).put("ts", System.currentTimeMillis()))
+        cap(a, 100); save()
+    }
+
+    @Synchronized
+    fun skillsFor(goal: String, limit: Int): List<String> {
+        val toks = norm(goal).split(" ").map { it.removePrefix("ال") }.filter { it.length >= 3 }.toSet()
+        if (toks.isEmpty()) return emptyList()
+        val a = arr("skills")
+        val out = ArrayList<Pair<Int, String>>()
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            val h = norm(o.optString("g"))
+            val s = toks.count { h.contains(it) }
+            if (s >= 2 || (s >= 1 && toks.size <= 2)) {
+                val st = o.getJSONArray("st")
+                val steps = (0 until st.length()).joinToString(" -> ") { st.getString(it) }
+                val g = o.optString("g")
+                out.add(s to if (o.optBoolean("ok")) "worked for goal \"$g\": $steps"
+                             else "failed for goal \"$g\" (${o.optString("n")}) after: $steps - try a different path")
+            }
+        }
+        return out.sortedByDescending { it.first }.take(limit).map { it.second }
     }
 
     // ------------------------------------------------------------ projects (for hand-off between builders)
