@@ -32,6 +32,7 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(object {
             @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
+            @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun setKeys(json: String) {
                 try { Keys.save(JSONObject(json)) } catch (_: Exception) {}
             }

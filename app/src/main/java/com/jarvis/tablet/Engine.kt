@@ -15,6 +15,8 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -83,6 +85,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var lastToolResult = ""
     private var summarizing = false
     private var syncJob: Job? = null
+    private val deviceStt by lazy { DeviceStt(ctx) }
     private class AgentResult(val ok: Boolean, val summary: String, val result: String = "")
     private val phraseCache = HashMap<String, Pcm>()
     private val deadTts = HashSet<String>()
@@ -94,9 +97,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Keys.init(ctx)
         Memory.init(ctx)
         Brain.init(ctx)
-        tts = TextToSpeech(ctx) { status -> if (status == TextToSpeech.SUCCESS) ttsReady = true }
+        tts = TextToSpeech(ctx) { status ->
+            if (status == TextToSpeech.SUCCESS) { ttsReady = true; checkArabicVoice() }
+            else Bus.say("err", "محرك الصوت (TTS) مش شغال على الجهاز")
+        }
         Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
         Bus.onToggle = { _ -> bubbleTap() }
+        Bus.onTestLocal = { scope.launch(Dispatchers.IO) { testLocalServer() } }
         scope.launch(Dispatchers.IO) { delay(2500); prewarm() }
         pushStatus()
         Bus.log("Jarvis engine online")
@@ -209,6 +216,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private fun cancelSession() {
         sessionActive = false
         listeningNow = false
+        deviceStt.cancel()
         tts?.stop()
         try { track?.stop() } catch (_: Exception) {}
     }
@@ -245,6 +253,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** records one utterance and returns its transcript (language auto-detected), or null */
     private suspend fun listenText(waitFrames: Int): String? {
+        if (useDeviceStt()) return listenDeviceText()
         if (!Keys.hasLlm()) {
             Bus.say("err", "محتاج مفتاح Groq أو OpenAI أو Gemini عشان أفهم الصوت"); return null
         }
@@ -622,13 +631,13 @@ $extraRules
     }
 
     // ------------------------------------------------------------ http helpers
-    private fun postJson(url: String, headers: Map<String, String>, body: JSONObject): String {
+    private fun postJson(url: String, headers: Map<String, String>, body: JSONObject, connectMs: Int = 15000, readMs: Int = 40000): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 15000
-            conn.readTimeout = 40000
+            conn.connectTimeout = connectMs
+            conn.readTimeout = readMs
             conn.setRequestProperty("Content-Type", "application/json")
             for ((k, v) in headers) conn.setRequestProperty(k, v)
             conn.outputStream.use { it.write(body.toString().toByteArray()) }
@@ -743,6 +752,9 @@ $extraRules
         e is HttpException && e.code == 429 -> "وصلت حد الاستخدام"
         e is HttpException && (e.code == 401 || e.code == 403) -> "المفتاح غلط"
         e is HttpException -> "خطأ ${e.code}"
+        e is java.net.ConnectException -> "السيرفر مش شغال / مفيش اتصال"
+        e is java.net.SocketTimeoutException -> "انتهى الوقت (مبيردش)"
+        e is java.net.UnknownHostException -> "مفيش إنترنت"
         else -> e.javaClass.simpleName
     }
 
@@ -767,7 +779,11 @@ $extraRules
         val user = if (note.isEmpty()) text else "$text\n\n[$note]"
         val deep = isDeep(text)
         val errs = ArrayList<String>()
-        for (p in providerOrder(text)) {
+        val order = buildList<String> {
+            if (Keys.localOn) add("local")
+            if (!(Keys.localOn && Keys.localOnly)) addAll(providerOrder(text))
+        }
+        for (p in order) {
             try {
                 val r: JSONObject? = when (p) {
                     "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
@@ -776,6 +792,7 @@ $extraRules
                     "groq" -> if (Keys.groq.isNotBlank()) openAiChat(
                         "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
                         Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") }, sys, user) else null
+                    "local" -> if (Keys.localOn) localChat(systemPromptLite(text), user) else null
                     "deepseek" -> if (Keys.ds.isNotBlank()) openAiChat(
                         "https://api.deepseek.com/chat/completions", Keys.ds,
                         Config.list("deepseek_models").ifEmpty { listOf("deepseek-chat") }, sys, user) else null
@@ -792,7 +809,10 @@ $extraRules
                 errs.add("$p: ${shortErr(e)}")
             }
         }
-        if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
+        if (errs.isNotEmpty()) throw AllFailedException(
+            errs.joinToString(" | ") +
+                if (errs.any { it.startsWith("local:") }) "\nشغّل llama-server على ${localBase()} الأول (في Termux) وسيبه شغال" else ""
+        )
         throw NoKeyException()
     }
 
@@ -1262,7 +1282,7 @@ Rules:
         val a = JarvisAccessibility.instance
             ?: return AgentResult(false, "فعّل خدمة Jarvis من إمكانية الوصول عشان أقدر أتحكم في الموبايل")
         if (goal.isBlank()) return AgentResult(false, "مفهمتش المطلوب")
-        if (!Keys.hasLlm()) return AgentResult(false, "محتاج مفتاح Groq أو OpenAI أو Gemini")
+        if (!Keys.hasCloud() || !isOnline()) return AgentResult(false, "التحكم في الشاشة محتاج إنترنت ومفتاح سحابي (Gemini مثلا). المحرك المحلي لوحده مش بيشوف الشاشة")
         val steps = ArrayList<String>()
         val lang = langNote(goal)
         Bus.log("AGENT: $goal")
@@ -1415,7 +1435,7 @@ Rules:
 
     /** condenses old conversation turns into organized facts + topic summaries */
     private fun maybeSummarize() {
-        if (summarizing || Brain.pendingTurns() < 30 || !Keys.hasLlm()) return
+        if (summarizing || Brain.pendingTurns() < 30 || !Keys.hasCloud() || !isOnline()) return
         summarizing = true
         try {
             val turns = Brain.takeOldTurns(24)
@@ -1520,6 +1540,122 @@ Rules:
         val r = runAgent("Open the $to app (use its website in the browser if the app is not installed). Start a new task or chat, paste the clipboard text into the message box (long-press the box and tap Paste), and send it. The text is a project hand-off brief.")
         agentSummary = r.summary
         return null
+    }
+
+    // ------------------------------------------------------------ local LLM (llama.cpp, OpenAI-compatible)
+    /** normalises whatever the user typed to .../v1 (no trailing slash, no /chat/completions) */
+    private fun localBase(): String {
+        var u = Keys.localUrl.trim().removeSuffix("/")
+        if (u.endsWith("/chat/completions")) u = u.removeSuffix("/chat/completions").removeSuffix("/")
+        if (!u.endsWith("/v1")) u += "/v1"
+        return u
+    }
+
+    /** fails fast (2.5 s) with ConnectException when the llama.cpp server is not running */
+    private fun localPing(): String {
+        val conn = URL(localBase() + "/models").openConnection() as HttpURLConnection
+        try {
+            conn.connectTimeout = 2500
+            conn.readTimeout = 5000
+            conn.setRequestProperty("Authorization", "Bearer local")
+            val code = conn.responseCode
+            if (code !in 200..299) throw HttpException(code)
+            return try {
+                JSONObject(conn.inputStream.bufferedReader().readText())
+                    .optJSONArray("data")?.optJSONObject(0)?.optString("id").orEmpty()
+            } catch (_: Exception) { "" }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun localChat(sys: String, user: String): JSONObject {
+        localPing()
+        val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
+        for ((u, r) in history.toList().takeLast(4)) {
+            msgs.put(JSONObject().put("role", "user").put("content", u))
+            msgs.put(JSONObject().put("role", "assistant").put("content", r))
+        }
+        msgs.put(JSONObject().put("role", "user").put("content", user))
+        fun body(jsonMode: Boolean): JSONObject {
+            val b = JSONObject().put("model", Config.localModel()).put("messages", msgs)
+                .put("max_tokens", Config.localMaxTokens()).put("temperature", 0.3).put("stream", false)
+            if (jsonMode) b.put("response_format", JSONObject().put("type", "json_object"))
+            return b
+        }
+        val url = localBase() + "/chat/completions"
+        val headers = mapOf("Authorization" to "Bearer local")
+        val txt = try {
+            postJson(url, headers, body(true), 2500, 180_000)
+        } catch (e: HttpException) {
+            if (e.code == 400 || e.code == 422) postJson(url, headers, body(false), 2500, 180_000) else throw e
+        }
+        val content = JSONObject(txt).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+        return parseLoose(content)
+    }
+
+    /** short prompt: a 1.5B model on a phone has a small context window */
+    private fun systemPromptLite(userText: String): String {
+        val now = SimpleDateFormat("EEEE d MMMM h:mm a", Locale("ar")).format(Date())
+        val facts = Brain.profile(6).joinToString("، ") { it.substringAfter("] ") }
+        val rel = Brain.relevant(userText, 3).joinToString(" | ")
+        return """أنت J.A.R.V.I.S مساعد صوتي، صاحب لصاحبه "${Keys.name}". رد بنفس لغة المستخدم (عربي مصري عامي أو English) في جملة أو اتنين من غير رموز.
+الوقت: $now
+${if (facts.isNotEmpty()) "عارف عنه: $facts" else ""}
+${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
+ارجع JSON فقط: {"reply":"...","actions":[]}
+الأوامر الممكنة في actions:
+{"type":"open_app","app":"اسم التطبيق"} {"type":"web_search","query":""} {"type":"youtube_search","query":""} {"type":"whatsapp","contact":"","message":""} {"type":"call","contact":""} {"type":"timer","seconds":60} {"type":"alarm","hour":7,"minute":0} {"type":"volume","level":50} {"type":"flashlight","on":true} {"type":"media","command":"play_pause"}
+لو مفيش أمر خلي actions فاضية."""
+    }
+
+    private fun localErrorHint(e: Exception): String = when (e) {
+        is java.net.ConnectException -> "السيرفر المحلي مش شغال على ${localBase()}. شغّل llama-server في Termux وسيبه شغال في الخلفية."
+        is java.net.SocketTimeoutException -> "السيرفر المحلي مش بيرد (بطيء أو الموديل لسه بيتحمل). جرّب تاني بعد شوية."
+        is HttpException -> "السيرفر رجّع خطأ ${e.code}: " + e.body.take(100)
+        else -> "خطأ في الاتصال بالسيرفر المحلي: ${e.javaClass.simpleName}"
+    }
+
+    private fun testLocalServer() {
+        Bus.say("j", "بختبر السيرفر المحلي: ${localBase()}")
+        try {
+            val model = localPing()
+            Bus.say("j", "✅ السيرفر شغال" + if (model.isNotEmpty()) " (الموديل: $model)" else "")
+            val t0 = System.currentTimeMillis()
+            val r = localChat(systemPromptLite("hi"), "قول مرحبا في كلمة واحدة")
+            Bus.say("j", "رد المحرك المحلي بعد " + ((System.currentTimeMillis() - t0) / 1000) + " ثانية: " + r.optString("reply").take(80))
+        } catch (e: Exception) {
+            Bus.say("err", localErrorHint(e))
+        }
+    }
+
+    private fun isOnline(): Boolean = try {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    } catch (_: Exception) { true }
+
+    private fun useDeviceStt(): Boolean = Keys.sttDevice || (Keys.localOn && Keys.localOnly)
+
+    private suspend fun listenDeviceText(): String? {
+        listeningNow = true
+        Bus.state("listening", "LISTENING")
+        val t = deviceStt.listen(Config.sttLang()) { Bus.say("err", it) }
+        listeningNow = false
+        return t?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun checkArabicVoice() {
+        val t = tts ?: return
+        val r = try { t.isLanguageAvailable(Locale("ar")) } catch (_: Exception) { TextToSpeech.LANG_NOT_SUPPORTED }
+        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+            Bus.say("err", "صوت العربي الأوفلاين مش متثبت. نزّل Arabic من إعدادات الصوت (Speech Services by Google)")
+            if (Keys.localOn) {
+                try {
+                    ctx.startActivity(Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun normalizeNumber(raw: String): String {
@@ -1753,7 +1889,7 @@ Rules:
     }
 
     private fun prewarm() {
-        if (Config.ttsProvider() == "system") return
+        if (Config.ttsProvider() == "system" || (Keys.localOn && Keys.localOnly) || !isOnline()) return
         for (t in listOf(Config.wakePhrase(), Config.followupPhrase(), Config.byePhrase())) {
             if (phraseCache.containsKey(t)) continue
             try {
@@ -1772,7 +1908,7 @@ Rules:
             val hit = phraseCache[clean]
             if (hit != null) { playPcm(hit); delay(250); return }
         }
-        if (Config.ttsProvider() != "system") {
+        if (Config.ttsProvider() != "system" && !(Keys.localOn && Keys.localOnly) && isOnline()) {
             val pcm = try { withContext(Dispatchers.IO) { cloudTts(clean) } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
             if (pcm != null) {
                 val fx = if (pcm.provider == "fish") 0.0 else Config.robotFx()
@@ -1791,6 +1927,12 @@ Rules:
         if (!ttsReady || engine == null) return
         val arabic = text.any { it in '\u0600'..'\u06FF' }
         engine.language = if (arabic) Locale("ar") else Locale.US
+        if (arabic) {
+            val v = try {
+                engine.voices?.filter { it.locale.language == "ar" && !it.isNetworkConnectionRequired }?.maxByOrNull { it.quality }
+            } catch (_: Exception) { null }
+            if (v != null) engine.voice = v
+        }
         val done = CompletableDeferred<Unit>()
         val id = UUID.randomUUID().toString()
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {

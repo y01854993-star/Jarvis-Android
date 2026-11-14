@@ -53,5 +53,8 @@
   ],
   "kimi_models": [
     "kimi-k2-0905-preview"
-  ]
+  ],
+  "local_model": "qwen2.5-1.5b-instruct",
+  "local_max_tokens": 400,
+  "stt_lang": "ar-EG"
 }

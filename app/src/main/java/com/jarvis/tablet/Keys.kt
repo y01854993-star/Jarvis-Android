@@ -27,7 +27,14 @@ object Keys {
     val ghToken: String get() = sp.getString("ghtoken", "") ?: ""
     val ghRepo: String get() = sp.getString("ghrepo", "") ?: ""
 
-    fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank() || ds.isNotBlank() || kimi.isNotBlank()
+    val localOn: Boolean get() = sp.getBoolean("localon", false)
+    val localOnly: Boolean get() = sp.getBoolean("localonly", true)
+    val sttDevice: Boolean get() = sp.getBoolean("sttdev", false)
+    val localUrl: String get() = (sp.getString("localurl", "") ?: "").ifBlank { "http://127.0.0.1:8080/v1" }
+
+    fun hasCloud() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank() || ds.isNotBlank() || kimi.isNotBlank()
+
+    fun hasLlm() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank() || ds.isNotBlank() || kimi.isNotBlank() || localOn
 
     fun save(json: JSONObject) {
         version++
@@ -38,6 +45,10 @@ object Keys {
             .putString("gemini", json.optString("gem").trim())
             .putString("fish", json.optString("fish").trim())
             .putString("fishvoice", json.optString("fishv").trim())
+            .putBoolean("localon", json.optBoolean("localon", false))
+            .putString("localurl", json.optString("localurl").trim())
+            .putBoolean("localonly", json.optBoolean("localonly", true))
+            .putBoolean("sttdev", json.optBoolean("sttdev", false))
             .putString("ds", json.optString("ds").trim())
             .putString("kimi", json.optString("kimi").trim())
             .putString("ghtoken", json.optString("gh").trim())

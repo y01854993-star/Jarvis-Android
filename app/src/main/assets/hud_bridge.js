@@ -76,6 +76,10 @@
         kimi: localStorage.getItem("k_kimi") || "",
         gh: localStorage.getItem("k_gh") || "",
         ghrepo: localStorage.getItem("k_ghrepo") || "",
+        localon: localStorage.getItem("k_localon") === "1",
+        localurl: localStorage.getItem("k_localurl") || "http://127.0.0.1:8080/v1",
+        localonly: localStorage.getItem("k_localonly") !== "0",
+        sttdev: localStorage.getItem("k_sttdev") === "1",
         name: (typeof userName !== "undefined" && userName) || ""
       }));
     } catch (e) {}
