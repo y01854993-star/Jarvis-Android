@@ -104,6 +104,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
         Bus.onToggle = { _ -> bubbleTap() }
         Bus.onTestLocal = { scope.launch(Dispatchers.IO) { testLocalServer() } }
+        Bus.onTestVoice = { scope.launch(Dispatchers.Default) { deadTts.clear(); speak("This is my voice. Can you hear me, Boss?", false) } }
         scope.launch(Dispatchers.IO) { delay(2500); prewarm() }
         pushStatus()
         Bus.log("Jarvis engine online")
@@ -1826,9 +1827,9 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         for (p in order) {
             if (p in deadTts) continue
             try {
-                if (p == "fish" && Keys.fish.isNotBlank() && Keys.fishVoice.isNotBlank()) return fishTts(text)
-                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiTts(text)
-                if (p == "openai" && Keys.openai.isNotBlank()) return openAiTts(text)
+                if (p == "fish" && Keys.fish.isNotBlank() && Keys.fishVoice.isNotBlank()) return fishTts(text).also { Bus.log("VOICE: Fish Audio") }
+                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiTts(text).also { Bus.log("VOICE: Gemini (Fish مش شغال أو مش مضبوط)") }
+                if (p == "openai" && Keys.openai.isNotBlank()) return openAiTts(text).also { Bus.log("VOICE: OpenAI") }
                 if (p == "groq" && Keys.groq.isNotBlank()) return groqTts(text)
             } catch (e: Exception) {
                 if (e is HttpException && e.code in listOf(400, 401, 402, 403, 404, 429)) {

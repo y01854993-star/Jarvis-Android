@@ -12,6 +12,7 @@ object Bus {
     @Volatile var onToggle: ((String) -> Unit)? = null
     @Volatile var overlay: ((String) -> Unit)? = null
     @Volatile var onTestLocal: (() -> Unit)? = null
+    @Volatile var onTestVoice: (() -> Unit)? = null
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     fun emit(obj: JSONObject) {

@@ -20,7 +20,10 @@ object Keys {
     val name: String get() = (sp.getString("name", "") ?: "").trim().let { if (it.isBlank() || it == "يا فندم") "Boss" else it }
 
     val fish: String get() = sp.getString("fish", "") ?: ""
-    val fishVoice: String get() = sp.getString("fishvoice", "") ?: ""
+    val fishVoice: String get() {
+        val raw = sp.getString("fishvoice", "") ?: ""
+        return Regex("[0-9a-fA-F]{32}").find(raw)?.value ?: raw.trim()
+    }
 
     val ds: String get() = sp.getString("ds", "") ?: ""
     val kimi: String get() = sp.getString("kimi", "") ?: ""
