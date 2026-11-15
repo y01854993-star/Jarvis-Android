@@ -125,6 +125,7 @@ private class BubbleView(ctx: Context) : View(ctx) {
         val col = when (mode) {
             "listening" -> 0xFF34D399.toInt()
             "thinking" -> 0xFFFBBF24.toInt()
+            "recording" -> 0xFFF87171.toInt()
             else -> 0xFF22D3EE.toInt()
         }
         paint.style = Paint.Style.FILL

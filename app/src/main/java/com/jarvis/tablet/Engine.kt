@@ -84,6 +84,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var agentSummary: String? = null
     @Volatile private var lastToolResult = ""
     private var summarizing = false
+    private var recordingName = ""
     private var indexing = false
     private var syncJob: Job? = null
     private val deviceStt by lazy { DeviceStt(ctx) }
@@ -130,7 +131,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             block()
         } finally {
             busy = false
-            Bus.state("", IDLE)
+            idleState()
         }
     }
 
@@ -175,7 +176,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             }
         } finally {
             listeningNow = false
-            if (!busy) Bus.state("", IDLE)
+            if (!busy) idleState()
         }
     }
 
@@ -204,6 +205,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private suspend fun process(text: String) {
         Bus.state("thinking", "THINKING")
         Bus.say("u", text)
+        if (tryShortcut(text)) return
         val res = think(text) ?: return
         act(res, text)
     }
@@ -238,6 +240,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 if (isNoThanks(text)) { speak(Config.byePhrase(), true); break }
                 Bus.state("thinking", "THINKING")
                 Bus.say("u", text)
+                if (tryShortcut(text)) { speak(Config.followupPhrase(), true); round++; continue }
                 val res = think(text) ?: break
                 val done = act(res, text)
                 if (done || !sessionActive) break
@@ -249,7 +252,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             voiceMode = false
             listeningNow = false
             busy = false
-            Bus.state("", IDLE)
+            idleState()
         }
     }
 
@@ -363,7 +366,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 else "مش لاقي الرقم ده، ضيفه في جهات الاتصال"
             }
             "whatsapp_group" -> {
-                val g = a.optString("group")
+                val g = Brain.findPlace(a.optString("group"))?.optString("title")?.takeIf { it.isNotBlank() } ?: a.optString("group")
                 val msg = a.optString("message")
                 if (g.isBlank() || msg.isBlank()) "ناقصني اسم الجروب أو الرسالة"
                 else if (!confirmSend(g, msg)) "تمام، الغيتها"
@@ -395,6 +398,35 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
             }
+            "teach_start" -> {
+                val a11y = JarvisAccessibility.instance
+                if (a11y == null) "فعّل خدمة Jarvis من إمكانية الوصول" else {
+                    recordingName = a.optString("name")
+                    a11y.startRecording()
+                    null
+                }
+            }
+            "teach_stop" -> {
+                val a11y = JarvisAccessibility.instance
+                if (a11y == null || !a11y.recording) "أنا مش بسجّل دلوقتي" else {
+                    val steps = cleanSteps(a11y.stopRecording())
+                    val name = a.optString("name").ifBlank { recordingName }.ifBlank { "routine" }
+                    if (steps.length() == 0) "ما لقيتش خطوات اتسجلت" else {
+                        Brain.addMacro(name, a.optString("trigger").ifBlank { name }, steps)
+                        scheduleSync()
+                        null
+                    }
+                }
+            }
+            "run_macro" -> {
+                val m = Brain.findMacro(a.optString("name"))
+                if (m == null) "معنديش حاجة اتعلمتها بالاسم ده" else runMacro(m)
+            }
+            "learn_screen" -> learnScreen(a.optString("alias"))
+            "open_place" -> {
+                val p = Brain.findPlace(a.optString("alias"))
+                if (p == null) "معنديش مكان بالاسم ده، علّمهولي الأول" else openPlace(p)
+            }
             "note_add" -> { Brain.addNote(a.optString("title"), a.optString("text"), a.optString("tags")); scheduleSync(); null }
             "teach" -> {
                 val i = a.optString("instruction")
@@ -422,7 +454,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val img = screenshotB64()
                 if (img == null) "معرفتش أصوّر الشاشة (فعّل خدمة Jarvis، ومحتاج أندرويد 11 أو أحدث)" else {
                     val ans = try {
-                        withContext(Dispatchers.IO) { visionAsk(q, img, langNote(q)) }
+                        withContext(Dispatchers.IO) { visionAsk(q, img, langNote(q), JarvisAccessibility.instance?.dumpScreen(90)?.first.orEmpty()) }
                     } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
                     if (ans.isNullOrBlank()) "معرفتش أحلل الصورة" else { agentSummary = ans; null }
                 }
@@ -554,6 +586,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         val brainBlock = buildString {
             if (rulesTxt.isNotEmpty()) append("- قواعد علّمهالك المستخدم (التزم بيها):\n").append(rulesTxt.joinToString("\n") { "  • $it" }).append("\n")
             if (rel.isNotEmpty()) append("- معلومات من الذاكرة والمذكرات ممكن تفيد في الرد:\n").append(rel.joinToString("\n") { "  • $it" }).append("\n")
+            val ms = Brain.macroNames()
+            val ps = Brain.placeNames()
+            if (ms.isNotEmpty()) append("- روتينات اتعلمتها (استخدم run_macro): ").append(ms.joinToString("، ")).append("\n")
+            if (ps.isNotEmpty()) append("- أماكن اتعلمتها (استخدم open_place، أو whatsapp_group بنفس الاسم): ").append(ps.joinToString("، ")).append("\n")
             if (lastToolResult.isNotBlank()) append("- آخر نتيجة طلعت من أداة (ممكن المستخدم يسأل عنها):\n  ").append(lastToolResult.take(1800)).append("\n")
         }
         val calBlock = if (wantsCalendar(userText)) calendarBlock() else ""
@@ -608,6 +644,11 @@ $extraRules
 - {"type":"project_save","name":"...","spec":"...","progress":"...","builder":"..."}: حفظ مشروع ومتطلباته وتقدمه (مثلا موقع بيتبني في لوفابل)
 - {"type":"handoff","name":"...","to":"Manus"}: لما أداة بناء (زي لوفابل) رصيدها يخلص أو المستخدم عايز يكمل في أداة تانية: بيجهز ملخص كامل بالمشروع واللي اتعمل ويفتح الأداة التانية تكمل من نفس النقطة مش من الصفر
 - {"type":"github_save","path":"...","content":"...","message":"..."}: حفظ ملف في GitHub بتاع المستخدم
+- {"type":"teach_start","name":"..."}: لما المستخدم يقول "اتعلم" أو "هعلمك" وهيعمل حاجة على الموبايل بإيده (بتسجّل كل ضغطاته وكتابته). name اسم الروتين
+- {"type":"teach_stop","name":"","trigger":"..."}: لما يقول "خلصت" أو "كده تمام": بتحفظ الروتين. trigger الجملة (أو جمل مفصولة بـ |) اللي لما يقولها تنفّذه
+- {"type":"run_macro","name":"..."}: تنفيذ روتين اتعلمته
+- {"type":"learn_screen","alias":"..."}: لما المستخدم يوقف على شاشة (زي جروب واتساب مفتوح) ويقول "ده جروب كذا" أو "اتعلم إن ده كذا": بتقرا الشاشة وتحفظ إيه اللي عليها. alias الاسم زي ما اتقال + أي كتابة تانية محتملة (عربي/English) مفصولة بـ |
+- {"type":"open_place","alias":"..."}: تفتح مكان اتعلمته (جروب، شاشة...)
 - {"type":"look","question":"..."}: لما المستخدم يسأل عن اللي على شاشته أو عايزك تشوف الشاشة وتشرحها أو تقراها أو تحللها (بتاخد سكرين شوت وتبص عليه)
 - {"type":"search_answer","query":"..."}: لأي سؤال محتاج معلومة حقيقية أو حديثة (أخبار، طقس، أسعار، نتايج، مين/إيه/إمتى) هتجاوب بنفسك من جوجل. استخدمه لما المستخدم عايز إجابة مش عايز يفتح المتصفح
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
@@ -627,6 +668,8 @@ $extraRules
 - لو سألك المستخدم عن ميعاد أو درس أو حدث وفي "التقويم" فوق: جاوب منه مباشرة.
 - لو المستخدم علّمك حاجة أو طلب تفتكر حاجة: استخدم teach أو note_add أو remember، وقول إنك اتعلمتها.
 - لو المستخدم بيبني مشروع في أداة وعايز يكمل في أداة تانية: استخدم handoff، وقبلها project_save لو المشروع مش محفوظ.
+- لو قال "افتح جروب X" وX موجود في الأماكن اللي اتعلمتها: open_place. ولو بيبعت رسالة للجروب: whatsapp_group بنفس الاسم.
+- لو المستخدم لسه بيعلّمك (قبل teach_stop): متنفذش حاجة تانية، بس أكد إنك بتسجّل.
 - لو المستخدم عايز تتحكم في الموبايل بشكل مش مغطى بالأوامر الجاهزة، أو سأل عن اللي على الشاشة: استخدم agent.
 - done: خليها true بس لو المستخدم قال إنه خلص ومش عايز حاجة تانية (لا شكرا، كفاية، خلاص)، غير كده false.
 - مع كل أمر: reply تأكيد قصير زي "تمام، فتحت يوتيوب".
@@ -1208,7 +1251,7 @@ $extraRules
     }
 
     /** Searches the WhatsApp chat list (groups included) via accessibility, then types and sends. Returns an error sentence or null. */
-    private suspend fun doWhatsappGroup(group: String, alt: String, message: String): String? {
+    private suspend fun doWhatsappGroup(group: String, alt: String, message: String?): String? {
         val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول عشان أدور في الجروبات"
         val pm = ctx.packageManager
         val pkg = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pm.getLaunchIntentForPackage(it) != null }
@@ -1235,6 +1278,7 @@ $extraRules
         }
         if (!opened) return "مش لاقي جروب اسمه $group"
         delay(1600)
+        if (message == null) return null
         if (!a.setTextFirst(listOf("$pkg:id/entry"), message)) return "معرفتش أكتب الرسالة في الجروب"
         delay(600)
         if (!a.clickFirst(listOf("$pkg:id/send"), listOf("Send", "إرسال"))) return "كتبت الرسالة بس معرفتش أدوس إرسال"
@@ -1408,15 +1452,16 @@ Rules:
     }
 
     /** answers a question about a phone screenshot */
-    private fun visionAsk(question: String, img: String, lang: String): String {
+    private fun visionAsk(question: String, img: String, lang: String, screenText: String = ""): String {
         val sys = "You look at a phone screenshot and answer the user's question about it accurately and concisely (1-4 short spoken sentences), in the user's language. No markdown, no lists, no symbols."
         val errs = ArrayList<String>()
+        val ask = "$question\n[$lang]" +
+            (if (screenText.isNotBlank()) "\nSCREEN ELEMENTS (exact text read from the screen):\n${screenText.take(5000)}" else "")
         if (Keys.gemini.isNotBlank()) try {
-            val parts = JSONArray().put(JSONObject().put("text", "$question\n[$lang]"))
+            val parts = JSONArray().put(JSONObject().put("text", ask))
                 .put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
             return geminiText(sys, parts)
         } catch (e: Exception) { errs.add("gemini: ${shortErr(e)}") }
-        val ask = "$question\n[$lang]"
         if (Keys.openai.isNotBlank()) try {
             val r = openAiChat("https://api.openai.com/v1/chat/completions", Keys.openai,
                 Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys + " Reply as JSON {\"reply\":\"...\"}.", ask, false, img)
@@ -1725,6 +1770,130 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         } finally {
             indexing = false
         }
+    }
+
+    private fun idleState() {
+        val rec = JarvisAccessibility.instance?.recording == true
+        Bus.state(if (rec) "recording" else "", if (rec) "REC - بسجّل اللي بتعمله" else IDLE)
+    }
+
+    private fun describeStep(s: JSONObject): String =
+        s.optString("t") + " " + s.optString("l").ifBlank { s.optString("txt").ifBlank { s.optString("id").substringAfterLast('/') } }
+            .ifBlank { s.optString("pkg") }
+
+    /** removes noise from a recorded demonstration and makes sure it starts by opening the app */
+    private fun cleanSteps(raw: List<JSONObject>): JSONArray {
+        val keep = ArrayList<JSONObject>()
+        var lastOpen = ""
+        for (s in raw) {
+            when (s.optString("t")) {
+                "open" -> { val p = s.optString("pkg"); if (p != lastOpen) { keep.add(s); lastOpen = p } }
+                "click", "long_click" -> if (s.optString("l").isNotBlank() || s.optString("id").isNotBlank()) keep.add(s)
+                "type" -> if (s.optString("txt").isNotBlank()) keep.add(s)
+            }
+            if (keep.size >= 40) break
+        }
+        if (keep.isNotEmpty() && keep[0].optString("t") != "open") {
+            val pkg = keep[0].optString("pkg")
+            if (pkg.isNotEmpty()) keep.add(0, JSONObject().put("t", "open").put("pkg", pkg))
+        }
+        val out = JSONArray()
+        for (k in keep) out.put(k)
+        return out
+    }
+
+    /** replays a recorded routine by element labels (not coordinates); falls back to the screen agent if a step fails */
+    private suspend fun runMacro(m: JSONObject): String? {
+        val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول"
+        val steps = m.getJSONArray("steps")
+        var lastPkg = ""
+        for (i in 0 until steps.length()) {
+            if (voiceMode && !sessionActive) return "تمام، وقفت"
+            val s = steps.getJSONObject(i)
+            val ok = when (s.optString("t")) {
+                "open" -> {
+                    val pkg = s.optString("pkg")
+                    if (pkg == lastPkg) true else {
+                        lastPkg = pkg
+                        val li = ctx.packageManager.getLaunchIntentForPackage(pkg)
+                        if (li == null) false else { launch(li); delay(2000); true }
+                    }
+                }
+                "click", "long_click" -> {
+                    var done = false
+                    for (attempt in 0 until 4) {
+                        done = a.findAndClick(s.optString("id"), s.optString("l"), s.optString("t") == "long_click")
+                        if (done) break
+                        if (attempt == 1) a.swipe("up")
+                        delay(900)
+                    }
+                    done
+                }
+                "type" -> a.typeById(s.optString("id"), s.optString("txt"))
+                else -> true
+            }
+            if (!ok) {
+                val hint = (0 until steps.length()).joinToString(" -> ") { describeStep(steps.getJSONObject(it)) }
+                val r = runAgentCore("Repeat this recorded routine: ${m.optString("name")}. Recorded steps: $hint. Continue from the current screen.", ArrayList(), "")
+                agentSummary = r.summary
+                return null
+            }
+            delay(900)
+        }
+        return null
+    }
+
+    /** reads the screen the user is standing on and remembers it under a spoken name (e.g. a WhatsApp group) */
+    private suspend fun learnScreen(alias: String): String? {
+        val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول"
+        if (alias.isBlank()) return "اسمه إيه؟"
+        val (screen, _) = a.dumpScreen(80)
+        val pkg = Regex("app: (\\S+)").find(screen)?.groupValues?.get(1) ?: ""
+        if (pkg.isEmpty() || pkg == ctx.packageName) return "افتح الشاشة اللي عايزني أتعلمها الأول وبعدين قولّي"
+        val img = screenshotB64()
+        val sys = "You identify what a phone screen shows so an assistant can find it again. Reply JSON {\"kind\":\"whatsapp_chat|whatsapp_group|app_screen|other\",\"title\":\"exact title of the chat/contact/screen as displayed\"}. For WhatsApp the title is the name in the top bar of the open chat. Copy the title exactly from the screen elements."
+        val res = try {
+            withContext(Dispatchers.IO) { agentChat(sys, "SCREEN ELEMENTS:\n${screen.take(5000)}", img) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) { return "معرفتش أحلل الشاشة" }
+        val title = res.optString("title").trim()
+        if (title.isEmpty()) return "ما قدرتش أعرف اسم اللي على الشاشة"
+        Brain.addPlace(alias, pkg, res.optString("kind", "app_screen"), title)
+        scheduleSync()
+        return null
+    }
+
+    private suspend fun openPlace(p: JSONObject): String? {
+        val pkg = p.optString("pkg")
+        val title = p.optString("title")
+        if (pkg.startsWith("com.whatsapp") && p.optString("kind").startsWith("whatsapp")) return doWhatsappGroup(title, "", null)
+        val r = runAgentCore("Open the app $pkg and go to the screen titled \"$title\".", ArrayList(), "")
+        agentSummary = r.summary
+        return null
+    }
+
+    /** instant, offline: a taught routine or place named in the sentence */
+    private suspend fun tryShortcut(text: String): Boolean {
+        val arabic = text.any { it in '\u0600'..'\u06FF' }
+        val okWord = if (arabic) "تمام" else "Done."
+        val m = Brain.findMacroByText(text)
+        if (m != null) {
+            val err = runMacro(m)
+            val r = agentSummary; agentSummary = null
+            speak(err ?: r ?: okWord, false)
+            return true
+        }
+        if (Regex("(افتح|افتحلي|روح|وديني|open|go to)", RegexOption.IGNORE_CASE).containsMatchIn(text)) {
+            val p = Brain.findPlaceByText(text)
+            if (p != null) {
+                val err = openPlace(p)
+                val r = agentSummary; agentSummary = null
+                speak(err ?: r ?: okWord, false)
+                return true
+            }
+        }
+        return false
     }
 
     private fun normalizeNumber(raw: String): String {

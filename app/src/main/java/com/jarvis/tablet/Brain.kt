@@ -53,7 +53,7 @@ object Brain {
         file = File(ctx.filesDir, "brain.json")
         embFile = File(ctx.filesDir, "brain_emb.dat")
         data = try { if (file.exists()) JSONObject(file.readText()) else JSONObject() } catch (_: Exception) { JSONObject() }
-        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills")) if (!data.has(k)) data.put(k, JSONArray())
+        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros")) if (!data.has(k)) data.put(k, JSONArray())
         if (!data.has("projects")) data.put("projects", JSONObject())
         idc = System.currentTimeMillis()
         for (k in listOf("facts", "notes", "sums")) {
@@ -306,6 +306,92 @@ object Brain {
             }
         }
         return out.sortedByDescending { it.first }.take(limit).map { it.second }
+    }
+
+    // ------------------------------------------------------------ places the user showed (e.g. a WhatsApp group)
+    private fun aliasesOf(o: JSONObject): List<String> =
+        (o.optString("alias").split("|") + o.optString("title")).map { norm(it) }.filter { it.length >= 3 }.distinct()
+
+    @Synchronized
+    fun addPlace(alias: String, pkg: String, kind: String, title: String) {
+        if (alias.isBlank() || title.isBlank()) return
+        val a = arr("places")
+        var i = a.length() - 1
+        while (i >= 0) { if (norm(a.getJSONObject(i).optString("title")) == norm(title)) a.remove(i); i-- }
+        a.put(JSONObject().put("alias", alias.trim()).put("pkg", pkg).put("kind", kind).put("title", title.trim())
+            .put("ts", System.currentTimeMillis()))
+        cap(a, 120); save()
+    }
+
+    @Synchronized
+    fun findPlace(spoken: String): JSONObject? {
+        val q = norm(spoken)
+        if (q.length < 3) return null
+        val a = arr("places")
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            if (aliasesOf(o).any { it == q || q.contains(it) || it.contains(q) }) return o
+        }
+        return null
+    }
+
+    @Synchronized
+    fun findPlaceByText(text: String): JSONObject? {
+        val q = norm(text)
+        val a = arr("places")
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            if (aliasesOf(o).any { q.contains(it) }) return o
+        }
+        return null
+    }
+
+    @Synchronized
+    fun placeNames(): List<String> {
+        val a = arr("places")
+        return (0 until a.length()).map { a.getJSONObject(it).optString("alias").ifBlank { a.getJSONObject(it).optString("title") } }
+    }
+
+    // ------------------------------------------------------------ routines recorded from a demonstration
+    @Synchronized
+    fun addMacro(name: String, trigger: String, steps: JSONArray) {
+        if (name.isBlank() || steps.length() == 0) return
+        val a = arr("macros")
+        var i = a.length() - 1
+        while (i >= 0) { if (norm(a.getJSONObject(i).optString("name")) == norm(name)) a.remove(i); i-- }
+        a.put(JSONObject().put("name", name.trim()).put("trigger", trigger.trim()).put("steps", steps).put("ts", System.currentTimeMillis()))
+        cap(a, 60); save()
+    }
+
+    @Synchronized
+    fun findMacro(name: String): JSONObject? {
+        val q = norm(name)
+        if (q.length < 3) return null
+        val a = arr("macros")
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            val n = norm(o.optString("name"))
+            if (n == q || n.contains(q) || q.contains(n)) return o
+        }
+        return null
+    }
+
+    @Synchronized
+    fun findMacroByText(text: String): JSONObject? {
+        val q = norm(text)
+        val a = arr("macros")
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            val triggers = (o.optString("trigger").split("|") + o.optString("name")).map { norm(it) }.filter { it.length >= 4 }
+            if (triggers.any { q.contains(it) }) return o
+        }
+        return null
+    }
+
+    @Synchronized
+    fun macroNames(): List<String> {
+        val a = arr("macros")
+        return (0 until a.length()).map { a.getJSONObject(it).optString("name") }
     }
 
     // ------------------------------------------------------------ projects (for hand-off between builders)

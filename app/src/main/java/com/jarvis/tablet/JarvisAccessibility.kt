@@ -64,6 +64,7 @@ class JarvisAccessibility : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: return
+        if (recording) record(event)
         val root = rootInActiveWindow ?: return
 
         if (pkg == "com.whatsapp" && System.currentTimeMillis() < waPendingUntil) {
@@ -316,6 +317,78 @@ class JarvisAccessibility : AccessibilityService() {
                 override fun onFailure(errorCode: Int) { onDone(null) }
             })
         } catch (e: Exception) { onDone(null) }
+    }
+
+    // ---------------------------------------------------------- learn by demonstration
+    @Volatile var recording = false
+    private val recSteps = ArrayList<JSONObject>()
+    private var recLastClickAt = 0L
+    private var recLastPkg = ""
+
+    fun startRecording() {
+        synchronized(recSteps) { recSteps.clear() }
+        recLastPkg = ""
+        recording = true
+    }
+
+    fun stopRecording(): List<JSONObject> {
+        recording = false
+        synchronized(recSteps) { return ArrayList(recSteps) }
+    }
+
+    private fun record(e: AccessibilityEvent) {
+        val pkg = e.packageName?.toString() ?: return
+        if (pkg == packageName || pkg.contains("systemui") || pkg.contains("inputmethod") || pkg.contains("keyboard")) return
+        when (e.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                if (pkg != recLastPkg) {
+                    recLastPkg = pkg
+                    synchronized(recSteps) { recSteps.add(JSONObject().put("t", "open").put("pkg", pkg)) }
+                }
+            }
+            AccessibilityEvent.TYPE_VIEW_CLICKED, AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
+                val now = System.currentTimeMillis()
+                if (now - recLastClickAt < 350) return
+                recLastClickAt = now
+                val src = e.source
+                if (e.isPassword || src?.isPassword == true) return
+                val label = e.text.firstOrNull { !it.isNullOrBlank() }?.toString()
+                    ?: src?.text?.toString() ?: src?.contentDescription?.toString()
+                    ?: e.contentDescription?.toString() ?: ""
+                val step = JSONObject()
+                    .put("t", if (e.eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) "long_click" else "click")
+                    .put("l", label.take(60)).put("id", src?.viewIdResourceName ?: "").put("pkg", pkg)
+                synchronized(recSteps) { recSteps.add(step) }
+            }
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                if (e.isPassword) return
+                val txt = e.text.firstOrNull()?.toString() ?: ""
+                val id = e.source?.viewIdResourceName ?: ""
+                synchronized(recSteps) {
+                    val last = recSteps.lastOrNull()
+                    if (last != null && last.optString("t") == "type" && last.optString("id") == id) last.put("txt", txt.take(200))
+                    else recSteps.add(JSONObject().put("t", "type").put("txt", txt.take(200)).put("id", id).put("pkg", pkg))
+                }
+            }
+        }
+    }
+
+    /** replay: click the element with this id whose text contains [label] (or just the label) */
+    fun findAndClick(viewId: String, label: String, long: Boolean = false): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val l = label.trim()
+        val byId = if (viewId.isNotBlank()) root.findAccessibilityNodeInfosByViewId(viewId) else emptyList()
+        val pick: AccessibilityNodeInfo? =
+            if (l.isNotEmpty()) byId.firstOrNull { collectText(it, 0).contains(l, true) }
+                ?: root.findAccessibilityNodeInfosByText(l).firstOrNull { it.isVisibleToUser }
+            else byId.firstOrNull { it.isVisibleToUser }
+        return pick?.let { if (long) longClickNode(it) else tapNode(it) } ?: false
+    }
+
+    fun typeById(viewId: String, text: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val n = if (viewId.isNotBlank()) root.findAccessibilityNodeInfosByViewId(viewId).firstOrNull() else null
+        return typeInto(n, text, false)
     }
 
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {
