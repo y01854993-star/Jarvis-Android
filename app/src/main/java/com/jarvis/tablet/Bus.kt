@@ -13,6 +13,10 @@ object Bus {
     @Volatile var overlay: ((String) -> Unit)? = null
     @Volatile var onTestLocal: (() -> Unit)? = null
     @Volatile var onTestVoice: (() -> Unit)? = null
+    @Volatile var onHealth: (() -> Unit)? = null
+    @Volatile var onToggleStudy: (() -> Unit)? = null
+    @Volatile var onIncomingCall: ((String?) -> Unit)? = null
+    @Volatile var onVoipAnswered: (() -> Unit)? = null
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     fun emit(obj: JSONObject) {
@@ -28,8 +32,10 @@ object Bus {
         emit(JSONObject().put("type", "log").put("text", line))
     }
 
-    fun say(kind: String, text: String) =
+    fun say(kind: String, text: String) {
+        if (kind == "err") Problems.add(text)
         emit(JSONObject().put("type", "say").put("c", kind).put("t", text))
+    }
 
     fun state(cls: String, text: String) =
         emit(JSONObject().put("type", "state").put("c", cls).put("t", text))

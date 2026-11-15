@@ -141,6 +141,8 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
   <div class="ig" id="fishBox"><label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key"><label style="margin-top:6px">Fish Voice ID (الصق رابط الصوت كامل fish.audio/m/... أو الـ ID)</label><input type="text" id="kFishV" placeholder="https://fish.audio/m/..."></div>
   <div class="ig" id="extraBox"><label>DeepSeek Key (اختياري)</label><input type="password" id="kDs" placeholder="sk-..."><label style="margin-top:6px">Kimi (Moonshot) Key (اختياري)</label><input type="password" id="kKimi" placeholder="sk-..."><label style="margin-top:6px">GitHub Token (لحفظ الذاكرة والمشاريع)</label><input type="password" id="kGh" placeholder="ghp_... / github_pat_..."><label style="margin-top:6px">GitHub Repo (owner/name)</label><input type="text" id="kGhRepo" placeholder="username/jarvis-brain"></div>
   <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
+  <button id="healthBtn" type="button" onclick="healthCheck()" style="background:#34d399;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">HEALTH CHECK</button>
+  <button id="studyBtn" type="button" onclick="toggleStudy()" style="background:#fbbf24;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">STUDY MODE ON/OFF</button>
   <button id="testVoiceBtn" type="button" onclick="testVoice()" style="background:#22d3ee;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">TEST VOICE</button>
   <button id="resetKeys" onclick="resetKeys()" style="background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">RESET ALL KEYS</button>
 </div>
@@ -241,6 +243,8 @@ function testLocal(){
   if(window.AndroidBridge){ saveKeys(); AndroidBridge.testLocal(); }
   else addLog("err","الاختبار بيشتغل جوه تطبيق الأندرويد بس");
 }
+function healthCheck(){ if(window.AndroidBridge){ saveKeys(); AndroidBridge.testHealth(); } else addLog("err","الفحص بيشتغل جوه تطبيق الأندرويد بس"); }
+function toggleStudy(){ if(window.AndroidBridge) AndroidBridge.toggleStudy(); else addLog("err","وضع المذاكرة بيشتغل جوه تطبيق الأندرويد بس"); }
 function testVoice(){
   if(window.AndroidBridge){ saveKeys(); AndroidBridge.testVoice(); }
   else addLog("err","الاختبار بيشتغل جوه تطبيق الأندرويد بس");

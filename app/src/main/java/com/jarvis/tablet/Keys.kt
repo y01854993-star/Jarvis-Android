@@ -31,6 +31,10 @@ object Keys {
     val ghRepo: String get() = sp.getString("ghrepo", "") ?: ""
 
     val localOn: Boolean get() = sp.getBoolean("localon", false)
+    fun studyActive(): Boolean = ::sp.isInitialized && sp.getBoolean("study", false) && System.currentTimeMillis() < sp.getLong("studyuntil", 0L)
+    fun setStudy(on: Boolean, until: Long) { sp.edit().putBoolean("study", on).putLong("studyuntil", until).apply() }
+    val tone: String get() = sp.getString("tone", "friend") ?: "friend"
+    fun setTone(t: String) { sp.edit().putString("tone", t).apply() }
     val localOnly: Boolean get() = sp.getBoolean("localonly", true)
     val sttDevice: Boolean get() = sp.getBoolean("sttdev", false)
     val localUrl: String get() = (sp.getString("localurl", "") ?: "").ifBlank { "http://127.0.0.1:8080/v1" }

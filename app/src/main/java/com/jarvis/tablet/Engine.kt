@@ -27,10 +27,15 @@ import android.telephony.SmsManager
 import android.view.KeyEvent
 import android.provider.ContactsContract
 import android.speech.tts.TextToSpeech
+import android.telecom.TelecomManager
+import android.telephony.TelephonyManager
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +47,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.DataOutputStream
+import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
@@ -85,6 +91,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var lastToolResult = ""
     private var summarizing = false
     private var recordingName = ""
+    @Volatile private var callAudio = false
+    private var lastCallAt = 0L
     private var indexing = false
     private var syncJob: Job? = null
     private val deviceStt by lazy { DeviceStt(ctx) }
@@ -99,6 +107,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Keys.init(ctx)
         Memory.init(ctx)
         Brain.init(ctx)
+        Health.init(ctx)
+        Problems.init(ctx)
         tts = TextToSpeech(ctx) { status ->
             if (status == TextToSpeech.SUCCESS) { ttsReady = true; checkArabicVoice() }
             else Bus.say("err", "محرك الصوت (TTS) مش شغال على الجهاز")
@@ -106,6 +116,28 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
         Bus.onToggle = { _ -> bubbleTap() }
         Bus.onTestLocal = { scope.launch(Dispatchers.IO) { testLocalServer() } }
+        Bus.onHealth = { scope.launch(Dispatchers.IO) { healthCheck() } }
+        Bus.onIncomingCall = { n -> onIncomingCall(n) }
+        Bus.onVoipAnswered = {
+            scope.launch(Dispatchers.Default) {
+                delay(1500)
+                speakToCall(studyIntro())
+                delay(800)
+                JarvisAccessibility.instance?.clickFirst(emptyList(), listOf("End call", "End", "إنهاء"))
+            }
+        }
+        Bus.onToggleStudy = {
+            val on = !Keys.studyActive()
+            Keys.setStudy(on, if (on) System.currentTimeMillis() + 3 * 3600_000L else 0L)
+            Bus.say("j", if (on) "📚 وضع المذاكرة شغال (3 ساعات). هرد على المكالمات." else "وضع المذاكرة اتقفل")
+        }
+        scope.launch(Dispatchers.IO) {
+            delay(4000)
+            while (isActive) {
+                try { healthCheck() } catch (_: Exception) {}
+                delay(6L * 3600 * 1000)
+            }
+        }
         Bus.onTestVoice = { scope.launch(Dispatchers.Default) { deadTts.clear(); speak("This is my voice. Can you hear me, Boss?", false) } }
         scope.launch(Dispatchers.IO) { delay(2500); prewarm() }
         pushStatus()
@@ -153,7 +185,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             if (!listeningNow) return                               // cancelled
             if (pcm == null) { Bus.say("err", "ما سمعتش حاجة، جرّب تاني"); return }
             listeningNow = false
-            Bus.state("thinking", "THINKING")
+            thinkState()
             val wav = toWav(pcm)
 
             if (Keys.groq.isNotBlank() || Keys.openai.isNotBlank()) {
@@ -203,7 +235,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     }
 
     private suspend fun process(text: String) {
-        Bus.state("thinking", "THINKING")
+        thinkState()
         Bus.say("u", text)
         if (tryShortcut(text)) return
         val res = think(text) ?: return
@@ -238,7 +270,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val text = listenText(if (round == 0) 90 else 70) ?: break
                 if (!sessionActive) break
                 if (isNoThanks(text)) { speak(Config.byePhrase(), true); break }
-                Bus.state("thinking", "THINKING")
+                thinkState()
                 Bus.say("u", text)
                 if (tryShortcut(text)) { speak(Config.followupPhrase(), true); round++; continue }
                 val res = think(text) ?: break
@@ -267,7 +299,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         val pcm = recordUtterance(waitFrames)
         listeningNow = false
         if (pcm == null) return null
-        Bus.state("thinking", "THINKING")
+        thinkState()
         val wav = toWav(pcm)
         return try {
             withContext(Dispatchers.IO) { transcribe(wav, "auto") }.ifBlank { null }
@@ -398,6 +430,27 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
             }
+            "study_mode" -> {
+                val on = a.optBoolean("on", true)
+                val mins = a.optInt("minutes", 180).coerceIn(10, 600)
+                Keys.setStudy(on, if (on) System.currentTimeMillis() + mins * 60_000L else 0L)
+                if (!on) {
+                    val missed = Brain.takeNotesByTag("calls")
+                    if (missed.isNotEmpty()) agentSummary = "تمام، خلصت مذاكرة. ده اللي فاتك: " + missed.joinToString("، ")
+                }
+                null
+            }
+            "voice_message" -> doVoiceMessage(a)
+            "set_persona" -> {
+                val t = a.optString("tone")
+                if (t in listOf("formal", "friend", "playful")) { Keys.setTone(t); null } else "النبرة دي مش موجودة"
+            }
+            "problems_open" -> {
+                val u = withContext(Dispatchers.IO) { Problems.export(ctx) }
+                if (u != null && launch(Intent(Intent.ACTION_VIEW).setDataAndType(u, "text/plain").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))) null
+                else "معرفتش أفتح الملف، هو في Documents/JARVIS/problems.md"
+            }
+            "problems_read" -> { agentSummary = Problems.summary(); null }
             "teach_start" -> {
                 val a11y = JarvisAccessibility.instance
                 if (a11y == null) "فعّل خدمة Jarvis من إمكانية الوصول" else {
@@ -605,7 +658,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 - addressed: true لو المتحدث نادى "جارفس" أو "جارفيس" أو Jarvis، أو لو in_conversation = true.
 - لو addressed=false: actions=[] و reply="".""" else ""
         return """أنت J.A.R.V.I.S مساعد شخصي ذكي جدا على موبايل المستخدم. بتناديه دايما "${Keys.name}" بالإنجليزي زي ما هي، حتى وسط الكلام العربي، وخليها جزء طبيعي من ردك (مش في كل جملة).
-شخصيتك: صاحب مقرّب وذكي، مش خدام ولا موظف. اتكلم بعفوية وبالعامية المصرية الحقيقية زي ما بتكلم صاحبك، هزّر لما يناسب، وقول رأيك بصراحة، وعلّق على الكلام زي الصحاب. ممنوع الجمل الرسمية زي "تحت أمرك" و"في خدمتك" و"حاضر يا فندم". نادي المستخدم "Boss" كلقب صحوبية من وقت للتاني مش في كل رد. الرد قصير وطبيعي من غير مقدمات ولا تكرار، ولو بتتكلم English خليك casual برضه.
+${personaText()}
 قاعدة اللغة (مهمة جدا): رد دايما بنفس لغة آخر جملة قالها المستخدم. لو كلمك عربي رد بالعامية المصرية، ولو كلمك English رد English بس. متخلطش اللغات إلا لو هو خلط.
 الكلام جاي من تسجيل صوتي، فصحّح الأسماء والحروف الغلط من السياق.
 
@@ -644,6 +697,10 @@ $extraRules
 - {"type":"project_save","name":"...","spec":"...","progress":"...","builder":"..."}: حفظ مشروع ومتطلباته وتقدمه (مثلا موقع بيتبني في لوفابل)
 - {"type":"handoff","name":"...","to":"Manus"}: لما أداة بناء (زي لوفابل) رصيدها يخلص أو المستخدم عايز يكمل في أداة تانية: بيجهز ملخص كامل بالمشروع واللي اتعمل ويفتح الأداة التانية تكمل من نفس النقطة مش من الصفر
 - {"type":"github_save","path":"...","content":"...","message":"..."}: حفظ ملف في GitHub بتاع المستخدم
+- {"type":"study_mode","on":true,"minutes":180}: لما المستخدم يقول هيذاكر أو "هقعد أذاكر": بتدخل وضع المذاكرة (بترد على مكالماته وتعرّف بنفسك). "خلصت مذاكرة" => on=false
+- {"type":"voice_message","contact":"...","mode":"me","text":""}: رسالة صوتية واتساب. mode=me: بتسجّل صوت المستخدم نفسه. mode=jarvis: بتنطق text بصوتك
+- {"type":"set_persona","tone":"formal|friend|playful"}: تغيير نبرة كلامك ("خليك رسمي"، "اتكلم زي صاحبي"، "هزّر معايا")
+- {"type":"problems_open"}: فتح ملف المشاكل. {"type":"problems_read"}: تقرا المشاكل المتسجلة
 - {"type":"teach_start","name":"..."}: لما المستخدم يقول "اتعلم" أو "هعلمك" وهيعمل حاجة على الموبايل بإيده (بتسجّل كل ضغطاته وكتابته). name اسم الروتين
 - {"type":"teach_stop","name":"","trigger":"..."}: لما يقول "خلصت" أو "كده تمام": بتحفظ الروتين. trigger الجملة (أو جمل مفصولة بـ |) اللي لما يقولها تنفّذه
 - {"type":"run_macro","name":"..."}: تنفيذ روتين اتعلمته
@@ -829,7 +886,8 @@ $extraRules
             if (Keys.localOn) add("local")
             if (!(Keys.localOn && Keys.localOnly)) addAll(providerOrder(text))
         }
-        for (p in order) {
+        val cands = order.filter { !Health.isDisabled(it) }.ifEmpty { order }
+        for (p in cands) {
             try {
                 val r: JSONObject? = when (p) {
                     "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
@@ -848,10 +906,12 @@ $extraRules
                     else -> if (Keys.gemini.isNotBlank()) geminiGenerate(null, user, true, deep) else null
                 }
                 if (r != null) {
+                    Health.markOk(p)
                     Bus.log("BRAIN: $p" + if (deep) " (deep)" else "")
                     return r
                 }
             } catch (e: Exception) {
+                Health.markFail(p, e)
                 errs.add("$p: ${shortErr(e)}")
             }
         }
@@ -917,7 +977,7 @@ $extraRules
                     else Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") },
                     sys, user, false, img)
                 if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiJson(sys, user, img)
-            } catch (e: Exception) { errs.add("$p: ${shortErr(e)}") }
+            } catch (e: Exception) { Health.markFail(p, e); errs.add("$p: ${shortErr(e)}") }
         }
         if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
         throw NoKeyException()
@@ -1023,7 +1083,7 @@ $extraRules
         if (transcript.isEmpty()) { if (forced) Bus.say("err", "مفهمتش الكلام"); return }
         if (!forced && !res.optBoolean("addressed")) return
         withBusy {
-            Bus.state("thinking", "THINKING")
+            thinkState()
             Bus.say("u", transcript)
             act(res, transcript)
         }
@@ -1772,6 +1832,182 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         }
     }
 
+    private fun thinkState() =
+        Bus.state("thinking", listOf("لحظة...", "ثواني...", "بشوفلك...", "استنى شوية...", "هشوف...").random())
+
+    private fun personaText(): String = when (Keys.tone) {
+        "formal" -> """شخصيتك: مساعد شخصي رسمي ومحترم وذكي. بتتكلم بعربي مبسّط واضح ومهذب (أو English رسمي)، وبتنادي المستخدم "${Keys.name}" بأدب. من غير هزار ولا عامية تقيلة. الرد قصير ومباشر."""
+        "playful" -> """شخصيتك: خفيف الدم جدا ومرِح، بتهزّر وتعلّق وتستخدم قفشات وتشبيهات بالعامية المصرية، من غير ما تعطّل الشغل. نادي المستخدم "${Keys.name}" كلقب صحوبية. الرد قصير ومسلّي."""
+        else -> """شخصيتك: صاحب مقرّب وذكي، مش خدام ولا موظف. اتكلم بعفوية وبالعامية المصرية الحقيقية زي ما بتكلم صاحبك، هزّر لما يناسب، وقول رأيك بصراحة، وعلّق على الكلام زي الصحاب. ممنوع الجمل الرسمية زي "تحت أمرك" و"في خدمتك" و"حاضر يا فندم". نادي المستخدم "${Keys.name}" كلقب صحوبية من وقت للتاني مش في كل رد. الرد قصير وطبيعي من غير مقدمات ولا تكرار، ولو بتتكلم English خليك casual برضه."""
+    }
+
+    // ------------------------------------------------------------ real health check (parallel pings, silent cooldown)
+    private fun pingOpenAi(url: String, key: String, model: String) {
+        val body = JSONObject().put("model", model).put("max_tokens", 1)
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "ping")))
+        postJson(url, mapOf("Authorization" to "Bearer $key"), body, 5000, 12000)
+    }
+
+    private fun pingGemini() {
+        val body = JSONObject()
+            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "ping")))))
+            .put("generationConfig", JSONObject().put("maxOutputTokens", 1))
+        geminiCall(body)
+    }
+
+    private suspend fun healthCheck() {
+        if (!isOnline() && !Keys.localOn) return
+        val results = coroutineScope {
+            val jobs = ArrayList<kotlinx.coroutines.Deferred<Pair<String, Exception?>>>()
+            fun add(name: String, block: () -> Unit) {
+                jobs.add(async(Dispatchers.IO) { try { block(); name to null } catch (e: Exception) { name to e } })
+            }
+            if (Keys.gemini.isNotBlank()) add("gemini") { pingGemini() }
+            if (Keys.groq.isNotBlank()) add("groq") {
+                pingOpenAi("https://api.groq.com/openai/v1/chat/completions", Keys.groq, Config.list("groq_models").firstOrNull() ?: "llama-3.3-70b-versatile")
+            }
+            if (Keys.openai.isNotBlank()) add("openai") {
+                pingOpenAi("https://api.openai.com/v1/chat/completions", Keys.openai, Config.list("openai_models").lastOrNull() ?: "gpt-4o-mini")
+            }
+            if (Keys.ds.isNotBlank()) add("deepseek") {
+                pingOpenAi("https://api.deepseek.com/chat/completions", Keys.ds, Config.list("deepseek_models").firstOrNull() ?: "deepseek-chat")
+            }
+            if (Keys.kimi.isNotBlank()) add("kimi") {
+                pingOpenAi("https://api.moonshot.ai/v1/chat/completions", Keys.kimi, Config.list("kimi_models").firstOrNull() ?: "kimi-k2-0905-preview")
+            }
+            if (Keys.localOn) add("local") { localPing() }
+            jobs.awaitAll()
+        }
+        val ready = ArrayList<String>()
+        val bad = ArrayList<String>()
+        for ((name, err) in results) {
+            if (err == null) { Health.markOk(name); ready.add(name) }
+            else {
+                Health.markFail(name, err)
+                bad.add("$name: ${shortErr(err)}" + if (Health.isDisabled(name)) " (متعطل 24 ساعة)" else "")
+            }
+        }
+        Bus.emit(JSONObject().put("type", "health").put("text", "${ready.size} Models Ready").put("ready", ready.size))
+        if (ready.isNotEmpty()) Bus.say("j", "✅ شغالين: " + ready.joinToString("، "))
+        if (bad.isNotEmpty()) { Bus.say("j", "⏸ " + bad.joinToString(" | ")); Problems.add("health: " + bad.joinToString(" | ")) }
+        try { Problems.export(ctx) } catch (_: Exception) {}
+    }
+
+    // ------------------------------------------------------------ study mode: Jarvis screens the calls
+    private fun studyIntro(): String {
+        val first = Config.ownerName().substringBefore(' ')
+        return "أهلاً، أنا ${Config.assistantName()}، مساعد ${Config.ownerName()}. $first بيذاكر دلوقتي ومش هيقدر يرد. ابعتله رسالة وهيرجعلك أول ما يخلص. شكرًا ليك."
+    }
+
+    private fun studySms(): String =
+        "أنا ${Config.assistantName()}، مساعد ${Config.ownerName()}. ${Config.ownerName().substringBefore(' ')} بيذاكر دلوقتي، وهيرجعلك بعد ما يخلص إن شاء الله."
+
+    private fun lookupName(number: String?): String? {
+        if (number.isNullOrBlank() || ctx.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
+        return try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
+            ctx.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (_: Exception) { null }
+    }
+
+    private suspend fun speakToCall(text: String) {
+        callAudio = true
+        try { speak(text, false) } finally { callAudio = false }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun onIncomingCall(number: String?) {
+        if (!Keys.studyActive()) return
+        val now = System.currentTimeMillis()
+        if (now - lastCallAt < 6000) return          // the system fires this twice
+        lastCallAt = now
+        scope.launch(Dispatchers.Default) {
+            val name = lookupName(number)
+            val who = name ?: number ?: "رقم مجهول"
+            Bus.say("j", "📞 مكالمة من $who أثناء المذاكرة")
+            Brain.addNote("مكالمة فاتت", "اتصل $who (" + SimpleDateFormat("h:mm a", Locale("ar")).format(Date()) + ")", "calls")
+            if (Config.studyAnswer() && ctx.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
+                delay(3500)    // give the user a chance to pick up first
+                val phone = ctx.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                if (phone.callState != TelephonyManager.CALL_STATE_RINGING) return@launch
+                val tm = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                try { tm.acceptRingingCall() } catch (e: Exception) { Problems.add("answer call failed: ${e.javaClass.simpleName}"); return@launch }
+                delay(1200)
+                try { audio.isSpeakerphoneOn = true } catch (_: Exception) {}
+                speakToCall(studyIntro())
+                delay(1200)
+                try { tm.endCall() } catch (_: Exception) {}
+            }
+            if (number != null && name != null && Config.studySms() &&
+                ctx.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED) {
+                sendSms(number, studySms())
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ voice messages (WhatsApp)
+    private suspend fun synthPcm(text: String): Pcm? {
+        if (Config.ttsProvider() != "system" && !(Keys.localOn && Keys.localOnly) && isOnline()) {
+            val p = try { withContext(Dispatchers.IO) { cloudTts(text) } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            if (p != null) return p
+        }
+        val t = tts ?: return null
+        if (!ttsReady) return null
+        val f = File(ctx.cacheDir, "tts_${System.currentTimeMillis()}.wav")
+        val d = CompletableDeferred<Boolean>()
+        val id = UUID.randomUUID().toString()
+        t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) { d.complete(true) }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) { d.complete(false) }
+        })
+        t.language = if (text.any { it in '\u0600'..'\u06FF' }) Locale("ar") else Locale.US
+        if (t.synthesizeToFile(text, null, f, id) != TextToSpeech.SUCCESS) return null
+        val ok = withTimeoutOrNull(20_000) { d.await() } ?: false
+        if (!ok || !f.exists()) return null
+        return try { parseWav(f.readBytes()) } catch (_: Exception) { null }
+    }
+
+    /** records the user's own voice (mode "me") or synthesizes the text (mode "jarvis"), then sends it as a WhatsApp audio message */
+    private suspend fun doVoiceMessage(a: JSONObject): String? {
+        if (Build.VERSION.SDK_INT < 29) return "الرسايل الصوتية محتاجة أندرويد 10 أو أحدث"
+        val who = a.optString("contact")
+        val place = Brain.findPlace(who)
+        val number = if (place == null) resolveNumber(who) else null
+        if (place == null && number == null) return "مش لاقي الرقم ده"
+        val mode = a.optString("mode", "me")
+        val pcm: Pcm
+        if (mode == "jarvis") {
+            val text = a.optString("text")
+            if (text.isBlank()) return "قولي أبعت إيه"
+            pcm = synthPcm(text) ?: return "معرفتش أسجّل الصوت"
+        } else {
+            speak("قول الرسالة", false)
+            listeningNow = true
+            Bus.state("listening", "LISTENING")
+            val rec = recordUtterance(90)
+            listeningNow = false
+            if (rec == null) return "ما سمعتش حاجة"
+            pcm = Pcm(rec, 16000)
+        }
+        if (!confirmSend(who, if (mode == "jarvis") a.optString("text") else "voice message")) return "تمام، الغيتها"
+        val f = File(ctx.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
+        if (!withContext(Dispatchers.IO) { AudioShare.encodeM4a(pcm.samples, pcm.rate, f) }) return "معرفتش أجهّز الملف الصوتي"
+        val uri = withContext(Dispatchers.IO) { AudioShare.saveAudio(ctx, f, f.name) } ?: return "معرفتش أحفظ الملف"
+        val intent = AudioShare.whatsappShareIntent(ctx, uri, number?.let { normalizeNumber(it) })
+        val a11y = JarvisAccessibility.instance
+        val ok = if (a11y != null) a11y.shareToWhatsApp(intent) else launch(intent)
+        if (!ok) return "معرفتش أفتح الواتساب"
+        if (place != null) {
+            delay(2000)
+            val r = runAgentCore("In the WhatsApp share list, search for the chat named \"${place.optString("title")}\", open it and press the send button.", ArrayList(), "")
+            agentSummary = r.summary
+        }
+        return null
+    }
+
     private fun idleState() {
         val rec = JarvisAccessibility.instance?.recording == true
         Bus.state(if (rec) "recording" else "", if (rec) "REC - بسجّل اللي بتعمله" else IDLE)
@@ -2103,7 +2339,7 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
 
     private suspend fun playPcm(p: Pcm) = withContext(Dispatchers.IO) {
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setUsage(if (callAudio) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
         val fmt = AudioFormat.Builder().setSampleRate(p.rate)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -2171,6 +2407,11 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
             } catch (_: Exception) { null }
             if (v != null) engine.voice = v
         }
+        try {
+            engine.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(if (callAudio) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+        } catch (_: Exception) {}
         val done = CompletableDeferred<Unit>()
         val id = UUID.randomUUID().toString()
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {

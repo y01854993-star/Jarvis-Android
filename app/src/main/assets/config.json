@@ -56,5 +56,13 @@
   ],
   "local_model": "qwen2.5-1.5b-instruct",
   "local_max_tokens": 400,
-  "stt_lang": "ar-EG"
+  "stt_lang": "ar-EG",
+  "assistant_name": "جرجس",
+  "owner_name": "ياسين الزكي",
+  "study_answer": true,
+  "study_sms": true,
+  "study_voip_packages": [
+    "whatsapp",
+    "botim"
+  ]
 }

@@ -34,6 +34,8 @@ class MainActivity : Activity() {
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun testVoice() { Bus.onTestVoice?.invoke() }
+            @JavascriptInterface fun testHealth() { Bus.onHealth?.invoke() }
+            @JavascriptInterface fun toggleStudy() { Bus.onToggleStudy?.invoke() }
             @JavascriptInterface fun setKeys(json: String) {
                 try { Keys.save(JSONObject(json)) } catch (_: Exception) {}
             }
@@ -49,7 +51,8 @@ class MainActivity : Activity() {
         Bus.sink = { json -> push(json) }
 
         val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS,
-            Manifest.permission.CALL_PHONE, Manifest.permission.SEND_SMS, Manifest.permission.READ_CALENDAR)
+            Manifest.permission.CALL_PHONE, Manifest.permission.SEND_SMS, Manifest.permission.READ_CALENDAR,
+            Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG, Manifest.permission.ANSWER_PHONE_CALLS)
         if (Build.VERSION.SDK_INT >= 33) needed.add(Manifest.permission.POST_NOTIFICATIONS)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
         val missing = needed.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }

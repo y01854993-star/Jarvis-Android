@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import org.json.JSONObject
 
 class JarvisAccessibility : AccessibilityService() {
 
@@ -30,6 +31,7 @@ class JarvisAccessibility : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         Config.load(this)
+        Keys.init(this)
         Bus.log("Accessibility service ready")
     }
 
@@ -75,7 +77,8 @@ class JarvisAccessibility : AccessibilityService() {
             return
         }
 
-        if (Config.list("botim_package_hints").any { pkg.contains(it, ignoreCase = true) }) {
+        if (Config.list("botim_package_hints").any { pkg.contains(it, ignoreCase = true) } ||
+            (Keys.studyActive() && Config.list("study_voip_packages").any { pkg.contains(it, ignoreCase = true) })) {
             tryAnswer(root)
         }
     }
@@ -94,21 +97,27 @@ class JarvisAccessibility : AccessibilityService() {
         val audio = getSystemService(AUDIO_SERVICE) as AudioManager
         if (audio.mode == AudioManager.MODE_IN_COMMUNICATION) return   // already in a call
 
+        val study = Keys.studyActive()
         val allowed = Config.allowedCaller()
-        if (allowed.isBlank()) {
-            if (!warnedNoCaller) {
-                warnedNoCaller = true
-                Bus.log("allowed_caller فاضي - الرد التلقائي معطل")
+        if (study) {
+            if (!looksLikeIncomingCall(root)) return
+        } else {
+            if (allowed.isBlank()) {
+                if (!warnedNoCaller) {
+                    warnedNoCaller = true
+                    Bus.log("allowed_caller فاضي - الرد التلقائي معطل")
+                }
+                return
             }
-            return
+            if (!collectText(root, 0).contains(allowed, ignoreCase = true)) return
         }
-        if (!collectText(root, 0).contains(allowed, ignoreCase = true)) return
         lastAnswerTry = now
 
         for (t in Config.list("answer_texts")) {
             val n = root.findAccessibilityNodeInfosByText(t).firstOrNull { it.isVisibleToUser }
             if (n != null && clickNode(n)) {
                 Bus.log("CALL ANSWERED")
+                if (study) Bus.onVoipAnswered?.invoke()
                 return
             }
         }
@@ -389,6 +398,24 @@ class JarvisAccessibility : AccessibilityService() {
         val root = rootInActiveWindow ?: return false
         val n = if (viewId.isNotBlank()) root.findAccessibilityNodeInfosByViewId(viewId).firstOrNull() else null
         return typeInto(n, text, false)
+    }
+
+    /** an incoming VoIP call screen offers both answer and decline */
+    private fun looksLikeIncomingCall(root: AccessibilityNodeInfo): Boolean {
+        val t = collectText(root, 0).lowercase()
+        val answer = listOf("answer", "accept", "رد", "الرد", "قبول").any { t.contains(it) }
+        val decline = listOf("decline", "reject", "رفض").any { t.contains(it) }
+        return answer && decline
+    }
+
+    /** shares a file to WhatsApp and lets the send-button clicker finish the job */
+    fun shareToWhatsApp(i: Intent): Boolean = try {
+        startActivity(i)
+        waPendingUntil = System.currentTimeMillis() + 25_000
+        true
+    } catch (e: Exception) {
+        Bus.log("share failed: ${e.javaClass.simpleName}")
+        false
     }
 
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {

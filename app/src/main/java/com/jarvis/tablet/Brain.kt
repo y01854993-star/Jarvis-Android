@@ -308,6 +308,21 @@ object Brain {
         return out.sortedByDescending { it.first }.take(limit).map { it.second }
     }
 
+    /** returns (and removes) the texts of notes saved with this tag */
+    @Synchronized
+    fun takeNotesByTag(tag: String): List<String> {
+        val a = arr("notes")
+        val out = ArrayList<String>()
+        var i = a.length() - 1
+        while (i >= 0) {
+            val o = a.getJSONObject(i)
+            if (o.optString("tg") == tag) { out.add(o.optString("t")); a.remove(i) }
+            i--
+        }
+        if (out.isNotEmpty()) save()
+        return out.reversed()
+    }
+
     // ------------------------------------------------------------ places the user showed (e.g. a WhatsApp group)
     private fun aliasesOf(o: JSONObject): List<String> =
         (o.optString("alias").split("|") + o.optString("title")).map { norm(it) }.filter { it.length >= 3 }.distinct()
