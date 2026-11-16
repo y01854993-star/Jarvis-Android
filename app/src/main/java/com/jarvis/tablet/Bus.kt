@@ -15,6 +15,8 @@ object Bus {
     @Volatile var onTestVoice: (() -> Unit)? = null
     @Volatile var onHealth: (() -> Unit)? = null
     @Volatile var onToggleStudy: (() -> Unit)? = null
+    @Volatile var onWhatsAppMessage: ((WaMsg) -> Unit)? = null
+    @Volatile var cameraResult: ((String?) -> Unit)? = null
     @Volatile var onIncomingCall: ((String?) -> Unit)? = null
     @Volatile var onVoipAnswered: (() -> Unit)? = null
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)

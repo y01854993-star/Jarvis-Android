@@ -22,6 +22,8 @@ import android.os.BatteryManager
 import android.os.Build
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.MediaStore
+import android.media.MediaMetadata
 import android.provider.Settings
 import android.telephony.SmsManager
 import android.view.KeyEvent
@@ -95,6 +97,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private var lastCallAt = 0L
     private var indexing = false
     private var syncJob: Job? = null
+    private var sleepJob: Job? = null
+    private var lastAutoSig = ""
     private val deviceStt by lazy { DeviceStt(ctx) }
     private class AgentResult(val ok: Boolean, val summary: String, val result: String = "")
     private val phraseCache = HashMap<String, Pcm>()
@@ -109,6 +113,9 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Brain.init(ctx)
         Health.init(ctx)
         Problems.init(ctx)
+        AutoReply.init(ctx)
+        Brain.recentTurns(12).forEach { history.addLast(it) }
+        Bus.onWhatsAppMessage = { m -> scope.launch(Dispatchers.IO) { handleAutoReply(m) } }
         tts = TextToSpeech(ctx) { status ->
             if (status == TextToSpeech.SUCCESS) { ttsReady = true; checkArabicVoice() }
             else Bus.say("err", "محرك الصوت (TTS) مش شغال على الجهاز")
@@ -224,7 +231,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: AllFailedException) {
-            Bus.say("err", e.message ?: "كل المفاتيح فشلت"); null
+            Bus.say("err", (e.message ?: "كل المفاتيح فشلت") + if (!isOnline() && !Keys.localOn) "\nمفيش نت. فعّل المحرك المحلي من ⚙ عشان يشتغل أوفلاين" else ""); null
         } catch (e: NoKeyException) {
             Bus.say("err", "حط مفتاح Groq أو OpenAI أو Gemini الأول"); null
         } catch (e: HttpException) {
@@ -408,8 +415,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val num = resolveNumber(a.optString("contact"))
                 val act = if (ctx.checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
                     Intent.ACTION_CALL else Intent.ACTION_DIAL
-                if (num != null && launch(Intent(act, Uri.parse("tel:" + Uri.encode(num))))) null
-                else "مش لاقي الرقم ده"
+                if (num == null) "مش لاقي الرقم ده"
+                else if (!confirmAction("Calling ${a.optString("contact")}. Go ahead, Boss?")) "تمام، الغيتها"
+                else if (launch(Intent(act, Uri.parse("tel:" + Uri.encode(num))))) null
+                else "معرفتش أكلمه"
             }
             "navigate" -> {
                 val p = a.optString("place")
@@ -430,6 +439,31 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
             }
+            "camera_look" -> {
+                val q = a.optString("question").ifBlank { "اوصفلي اللي قدامي" }
+                if (!Keys.hasCloud() || !isOnline()) "الرؤية من الكاميرا محتاجة إنترنت ومفتاح (Gemini مثلا)"
+                else if (ctx.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) "اسمح بإذن الكاميرا من التطبيق"
+                else {
+                    val img = cameraShot(a.optString("facing", "back"))
+                    if (img == null) "معرفتش أصوّر" else {
+                        val ans = try {
+                            withContext(Dispatchers.IO) { visionAsk(q, img, langNote(q), "", "photo just taken by the phone camera; describe what is in front of the user") }
+                        } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                        if (ans.isNullOrBlank()) "معرفتش أحلل الصورة" else { agentSummary = ans; null }
+                    }
+                }
+            }
+            "play_media" -> doPlayMedia(a)
+            "media_control" -> doMediaControl(a)
+            "now_playing" -> { agentSummary = nowPlaying(); null }
+            "sleep_timer" -> {
+                val min = a.optInt("minutes", 30).coerceIn(1, 480)
+                sleepJob?.cancel()
+                sleepJob = scope.launch { delay(min * 60_000L); mediaController()?.transportControls?.pause() }
+                null
+            }
+            "autoreply_set" -> { AutoReply.configure(a); null }
+            "autoreply_status" -> { agentSummary = AutoReply.describe(); null }
             "study_mode" -> {
                 val on = a.optBoolean("on", true)
                 val mins = a.optInt("minutes", 180).coerceIn(10, 600)
@@ -485,7 +519,8 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val i = a.optString("instruction")
                 if (i.isBlank()) "مفهمتش أتعلم إيه" else { Brain.addRule(a.optString("trigger"), i); scheduleSync(); null }
             }
-            "forget" -> if (Brain.forget(a.optString("query")) == 0) "ملقتش حاجة بالاسم ده" else { scheduleSync(); null }
+            "forget" -> if (!confirmAction("Delete everything I remember about ${a.optString("query")}. Go ahead, Boss?")) "تمام، الغيتها"
+                        else if (Brain.forget(a.optString("query")) == 0) "ملقتش حاجة بالاسم ده" else { scheduleSync(); null }
             "github_save" -> if (!GitHub.configured()) "اربط GitHub الأول من زر ⚙" else {
                 val ok = withContext(Dispatchers.IO) {
                     try { GitHub.write(a.optString("path").trimStart('/'), a.optString("content"), a.optString("message").ifBlank { "Jarvis save" }) }
@@ -697,6 +732,12 @@ $extraRules
 - {"type":"project_save","name":"...","spec":"...","progress":"...","builder":"..."}: حفظ مشروع ومتطلباته وتقدمه (مثلا موقع بيتبني في لوفابل)
 - {"type":"handoff","name":"...","to":"Manus"}: لما أداة بناء (زي لوفابل) رصيدها يخلص أو المستخدم عايز يكمل في أداة تانية: بيجهز ملخص كامل بالمشروع واللي اتعمل ويفتح الأداة التانية تكمل من نفس النقطة مش من الصفر
 - {"type":"github_save","path":"...","content":"...","message":"..."}: حفظ ملف في GitHub بتاع المستخدم
+- {"type":"camera_look","question":"...","facing":"back"}: لما المستخدم يقول "شوف اللي قدامي" أو "اشرحلي الصورة دي": بتفتح الكاميرا في الخلفية من غير واجهة وبتصوّر وتوصف اللي قدامه (facing=front للأمامية)
+- {"type":"play_media","query":"اسم الأغنية أو الفيديو","app":"اسم التطبيق (اختياري)"}: تشغيل أغنية أو فيديو بالاسم فعلا (بيجرب الأمر المباشر الأول ثم الشاشة)
+- {"type":"media_control","command":"play|pause|next|previous|stop|seek_forward|seek_back|seek_to|speed","value":10}: تحكم في المشغّل الشغال (value بالثواني، أو سرعة زي 1.5)
+- {"type":"now_playing"}: إيه اللي شغال دلوقتي
+- {"type":"sleep_timer","minutes":30}: وقف الميديا بعد مدة
+- {"type":"autoreply_set","on":true,"contacts":["..."],"everyone":false,"groups":false,"from":22,"to":7,"keywords":[],"only_study":false,"disclose":true,"style":"..."}: رد تلقائي ذكي على رسايل واتساب بالقواعد دي بس. {"type":"autoreply_status"}: حالة الرد التلقائي
 - {"type":"study_mode","on":true,"minutes":180}: لما المستخدم يقول هيذاكر أو "هقعد أذاكر": بتدخل وضع المذاكرة (بترد على مكالماته وتعرّف بنفسك). "خلصت مذاكرة" => on=false
 - {"type":"voice_message","contact":"...","mode":"me","text":""}: رسالة صوتية واتساب. mode=me: بتسجّل صوت المستخدم نفسه. mode=jarvis: بتنطق text بصوتك
 - {"type":"set_persona","tone":"formal|friend|playful"}: تغيير نبرة كلامك ("خليك رسمي"، "اتكلم زي صاحبي"، "هزّر معايا")
@@ -725,6 +766,9 @@ $extraRules
 - لو سألك المستخدم عن ميعاد أو درس أو حدث وفي "التقويم" فوق: جاوب منه مباشرة.
 - لو المستخدم علّمك حاجة أو طلب تفتكر حاجة: استخدم teach أو note_add أو remember، وقول إنك اتعلمتها.
 - لو المستخدم بيبني مشروع في أداة وعايز يكمل في أداة تانية: استخدم handoff، وقبلها project_save لو المشروع مش محفوظ.
+- لو طلب تشغيل أغنية أو فيديو معين: play_media بالاسم. وللتحكم (وقف، السرعة، اللي بعده، ارجع 10 ثواني): media_control.
+- الرد التلقائي على واتساب: اسأل المستخدم عن مين يرد عليه ولو في أوقات معينة قبل ما تفعّله، وماتفعّلوش لأي حد من نفسك.
+- لو قال "شوف اللي قدامي": camera_look. ولو قال "اللي على الشاشة": look.
 - لو قال "افتح جروب X" وX موجود في الأماكن اللي اتعلمتها: open_place. ولو بيبعت رسالة للجروب: whatsapp_group بنفس الاسم.
 - لو المستخدم لسه بيعلّمك (قبل teach_stop): متنفذش حاجة تانية، بس أكد إنك بتسجّل.
 - لو المستخدم عايز تتحكم في الموبايل بشكل مش مغطى بالأوامر الجاهزة، أو سأل عن اللي على الشاشة: استخدم agent.
@@ -1512,8 +1556,8 @@ Rules:
     }
 
     /** answers a question about a phone screenshot */
-    private fun visionAsk(question: String, img: String, lang: String, screenText: String = ""): String {
-        val sys = "You look at a phone screenshot and answer the user's question about it accurately and concisely (1-4 short spoken sentences), in the user's language. No markdown, no lists, no symbols."
+    private fun visionAsk(question: String, img: String, lang: String, screenText: String = "", kind: String = "phone screenshot"): String {
+        val sys = "You look at a $kind and answer the user's question about it accurately and concisely (1-4 short spoken sentences), in the user's language. No markdown, no lists, no symbols."
         val errs = ArrayList<String>()
         val ask = "$question\n[$lang]" +
             (if (screenText.isNotBlank()) "\nSCREEN ELEMENTS (exact text read from the screen):\n${screenText.take(5000)}" else "")
@@ -1699,10 +1743,10 @@ Rules:
         }
     }
 
-    private fun localChat(sys: String, user: String): JSONObject {
+    private fun localChat(sys: String, user: String, useHistory: Boolean = true): JSONObject {
         localPing()
         val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
-        for ((u, r) in history.toList().takeLast(4)) {
+        for ((u, r) in (if (useHistory) history.toList().takeLast(4) else emptyList())) {
             msgs.put(JSONObject().put("role", "user").put("content", u))
             msgs.put(JSONObject().put("role", "assistant").put("content", r))
         }
@@ -1830,6 +1874,113 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         } finally {
             indexing = false
         }
+    }
+
+    // ------------------------------------------------------------ confirmation by voice
+    private suspend fun confirmAction(spoken: String): Boolean {
+        if (!voiceMode || !Config.confirmMessages() || !Keys.hasLlm()) return true
+        speak(spoken, false)
+        val ans = listenText(60) ?: return false
+        return isYes(ans)
+    }
+
+    // ------------------------------------------------------------ WhatsApp smart auto-reply
+    private suspend fun handleAutoReply(m: WaMsg) {
+        val sig = m.sender + "|" + m.text
+        if (sig == lastAutoSig) return
+        lastAutoSig = sig
+        if (!AutoReply.shouldReply(m.sender, m.text, m.group, Keys.studyActive())) return
+        val reply = try {
+            withContext(Dispatchers.IO) { generateAutoReply(m) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Problems.add("autoreply failed: ${shortErr(e)}"); null
+        }
+        if (reply.isNullOrBlank()) return
+        val full = if (AutoReply.disclose()) "$reply\n(رد تلقائي من ${Config.assistantName()}، مساعد ${Config.ownerName()})" else reply
+        if (AutoReply.sendReply(ctx, m.action, full)) {
+            AutoReply.noteReplied(m.sender)
+            Brain.addNote("رد تلقائي", "رديت على ${m.sender} (قال: ${m.text.take(80)}): $reply", "autoreply")
+            Bus.say("j", "💬 رديت على ${m.sender}")
+        }
+    }
+
+    private fun generateAutoReply(m: WaMsg): String? {
+        val facts = Brain.relevant(m.sender + " " + m.text, 4, null).joinToString(" | ")
+        val sys = "You reply to a WhatsApp message on behalf of ${Config.ownerName()}, who is busy right now. Write ONE short natural reply in the sender's language (Egyptian Arabic dialect if Arabic). ${AutoReply.style()} Never promise anything specific, never reveal private information, never confirm payments or commitments. If the message needs the owner, say he will get back to them later. If the message is a verification code, a bank or financial matter, or anything sensitive, reply with an empty string. Reply JSON {\"reply\":\"...\"}."
+        val user = "FROM: ${m.sender}\nMESSAGE: ${m.text}\n" + if (facts.isNotEmpty()) "CONTEXT ABOUT THE SENDER: $facts\n" else ""
+        val r = if (Keys.localOn && (Keys.localOnly || !Keys.hasCloud() || !isOnline())) localChat(sys, user, false) else agentChat(sys, user, null)
+        return r.optString("reply").trim().takeIf { it.isNotEmpty() }
+    }
+
+    // ------------------------------------------------------------ music / video control
+    private fun mediaController(): android.media.session.MediaController? = try {
+        val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as android.media.session.MediaSessionManager
+        val list = msm.getActiveSessions(android.content.ComponentName(ctx, JarvisNotifications::class.java))
+        list.firstOrNull { it.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING } ?: list.firstOrNull()
+    } catch (_: Exception) { null }
+
+    private fun doMediaControl(a: JSONObject): String? {
+        val c = mediaController() ?: return "مفيش مشغّل شغال، أو فعّل وصول التطبيق للإشعارات"
+        val t = c.transportControls
+        val v = a.optDouble("value", Double.NaN)
+        val sec = if (v.isNaN()) 10L else v.toLong()
+        val pos = c.playbackState?.position ?: 0L
+        when (a.optString("command")) {
+            "pause" -> t.pause()
+            "stop" -> t.stop()
+            "next" -> t.skipToNext()
+            "previous" -> t.skipToPrevious()
+            "seek_forward" -> t.seekTo(pos + sec * 1000)
+            "seek_back" -> t.seekTo(maxOf(0L, pos - sec * 1000))
+            "seek_to" -> t.seekTo((if (v.isNaN()) 0L else v.toLong()) * 1000)
+            "speed" -> if (Build.VERSION.SDK_INT >= 29) t.setPlaybackSpeed((if (v.isNaN()) 1.0 else v).toFloat()) else return "تغيير السرعة محتاج أندرويد 10"
+            else -> t.play()
+        }
+        return null
+    }
+
+    private fun nowPlaying(): String {
+        val c = mediaController() ?: return "مفيش حاجة شغالة دلوقتي"
+        val m = c.metadata
+        val title = m?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        val artist = m?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+        if (title.isBlank()) return "في مشغّل شغال بس مش قادر أعرف اسم اللي شغال"
+        return "شغّال دلوقتي: $title" + if (artist.isNotBlank()) " - $artist" else ""
+    }
+
+    /** direct intent first (works in YouTube Music, Spotify, ...), the screen agent as the fallback */
+    private suspend fun doPlayMedia(a: JSONObject): String? {
+        val q = a.optString("query")
+        if (q.isBlank()) return "اسم إيه؟"
+        val appName = a.optString("app")
+        val pkg = if (appName.isNotBlank())
+            installedApps().firstOrNull { it.first.contains(appName, true) || appName.contains(it.first, true) }?.second
+        else null
+        val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+            .putExtra(android.app.SearchManager.QUERY, q)
+            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+        if (pkg != null) i.setPackage(pkg)
+        val resolvable = try { ctx.packageManager.queryIntentActivities(i, 0).isNotEmpty() } catch (_: Exception) { false }
+        if (resolvable && launch(i)) { delay(2500); return null }
+        val goal = "Play \"$q\"" + (if (appName.isNotBlank()) " in the $appName app" else " in the user's music or video app") +
+            ". Search for it, open the best matching result, and make sure playback really starts."
+        val r = runAgent(goal)
+        agentSummary = r.summary
+        return null
+    }
+
+    // ------------------------------------------------------------ camera (invisible capture)
+    private suspend fun cameraShot(facing: String): String? {
+        val d = CompletableDeferred<String?>()
+        Bus.cameraResult = { d.complete(it) }
+        val i = Intent(ctx, CaptureActivity::class.java).putExtra("facing", facing)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        if (!launch(i)) { Bus.cameraResult = null; return null }
+        val r = withTimeoutOrNull(12_000) { d.await() }
+        Bus.cameraResult = null
+        return r
     }
 
     private fun thinkState() =

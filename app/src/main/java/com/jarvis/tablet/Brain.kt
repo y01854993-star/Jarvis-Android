@@ -22,6 +22,8 @@ import java.util.Locale
 object Brain {
     private lateinit var file: File
     private lateinit var embFile: File
+    private lateinit var bak: File
+    private var saves = 0
     private var data = JSONObject()
     private var loaded = false
     private var idc = 0L
@@ -51,8 +53,13 @@ object Brain {
     fun init(ctx: Context) {
         if (loaded) return
         file = File(ctx.filesDir, "brain.json")
+        bak = File(ctx.filesDir, "brain.json.bak")
         embFile = File(ctx.filesDir, "brain_emb.dat")
-        data = try { if (file.exists()) JSONObject(file.readText()) else JSONObject() } catch (_: Exception) { JSONObject() }
+        val loadedData = readFile(file) ?: readFile(bak)
+        if (loadedData == null && file.exists()) {
+            try { file.renameTo(File(ctx.filesDir, "brain.corrupt." + System.currentTimeMillis())) } catch (_: Exception) {}
+        }
+        data = loadedData ?: JSONObject()
         for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros")) if (!data.has(k)) data.put(k, JSONArray())
         if (!data.has("projects")) data.put("projects", JSONObject())
         idc = System.currentTimeMillis()
@@ -80,8 +87,38 @@ object Brain {
     private fun cap(a: JSONArray, max: Int) { while (a.length() > max) a.remove(0) }
     private fun stamp(): String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
 
+    private fun readFile(f: File): JSONObject? {
+        if (!f.exists()) return null
+        return try {
+            val bytes = f.readBytes()
+            val txt = if (Vault.isEncrypted(bytes)) String(Vault.decrypt(bytes), Charsets.UTF_8) else String(bytes, Charsets.UTF_8)
+            JSONObject(txt)
+        } catch (_: Exception) { null }
+    }
+
+    /** encrypted at rest (Android Keystore), written atomically, with a rotating backup */
     @Synchronized
-    private fun save() { try { file.writeText(data.toString()) } catch (_: Exception) {} }
+    private fun save() {
+        try {
+            val plain = data.toString().toByteArray(Charsets.UTF_8)
+            val out = try { Vault.encrypt(plain) } catch (_: Exception) { plain }
+            val tmp = File(file.parentFile, "brain.json.tmp")
+            tmp.writeBytes(out)
+            if (file.exists() && (++saves % 15 == 1)) { try { file.copyTo(bak, overwrite = true) } catch (_: Exception) {} }
+            if (!tmp.renameTo(file)) file.writeBytes(out)
+        } catch (_: Exception) {}
+    }
+
+    @Synchronized
+    fun recentTurns(n: Int): List<Pair<String, String>> {
+        val a = arr("turns")
+        val out = ArrayList<Pair<String, String>>()
+        for (i in maxOf(0, a.length() - n) until a.length()) {
+            val o = a.getJSONObject(i)
+            out.add(o.optString("u") to o.optString("r"))
+        }
+        return out
+    }
 
     @Synchronized
     fun json(): String = data.toString(2)

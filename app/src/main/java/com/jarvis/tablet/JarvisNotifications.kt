@@ -24,5 +24,16 @@ class JarvisNotifications : NotificationListenerService() {
         } catch (_: Exception) { sbn.packageName }
         buf.add("$app: $title - ${text.take(140)}")
         while (buf.size > 30) buf.removeAt(0)
+
+        if (sbn.packageName.startsWith("com.whatsapp") && AutoReply.enabled()) {
+            val n = sbn.notification
+            if ((n.flags and Notification.FLAG_GROUP_SUMMARY) == 0 && text.isNotBlank()) {
+                val action = n.actions?.firstOrNull { it.remoteInputs?.isNotEmpty() == true }
+                if (action != null) {
+                    val group = ex.getBoolean("android.isGroupConversation", false)
+                    Bus.onWhatsAppMessage?.invoke(WaMsg(title, text, group, action))
+                }
+            }
+        }
     }
 }
