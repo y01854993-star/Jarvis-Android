@@ -96,15 +96,17 @@ object AutoReply {
     }
 
     /** answers through the notification's own inline-reply action (no UI automation) */
-    fun sendReply(ctx: Context, action: Notification.Action, text: String): Boolean = try {
-        val inputs = action.remoteInputs ?: return false
-        val i = Intent()
-        val b = Bundle()
-        for (ri in inputs) b.putCharSequence(ri.resultKey, text)
-        RemoteInput.addResultsToIntent(inputs, i, b)
-        action.actionIntent.send(ctx, 0, i)
-        true
-    } catch (_: Exception) {
-        false
+    fun sendReply(ctx: Context, action: Notification.Action, text: String): Boolean {
+        return try {
+            val inputs = action.remoteInputs ?: return false
+            val i = Intent()
+            val b = Bundle()
+            for (ri in inputs) b.putCharSequence(ri.resultKey, text)
+            RemoteInput.addResultsToIntent(inputs, i, b)
+            action.actionIntent.send(ctx, 0, i)
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 }
