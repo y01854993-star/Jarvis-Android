@@ -177,6 +177,17 @@ object Brain {
         return if (na == 0.0 || nb == 0.0) 0.0 else d / (Math.sqrt(na) * Math.sqrt(nb))
     }
 
+    @Synchronized
+    fun wipe() {
+        data = JSONObject()
+        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros")) data.put(k, JSONArray())
+        data.put("projects", JSONObject())
+        data.put("migrated", true)
+        emb.clear()
+        try { embFile.delete(); bak.delete() } catch (_: Exception) {}
+        save()
+    }
+
     // ------------------------------------------------------------ writes
     @Synchronized
     fun addFact(cat: String, text: String) {

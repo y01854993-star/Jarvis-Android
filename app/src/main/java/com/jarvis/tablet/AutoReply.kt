@@ -44,6 +44,15 @@ object AutoReply {
         if (j.has("from")) e.putInt("from", j.optInt("from", -1))
         if (j.has("to")) e.putInt("to", j.optInt("to", -1))
         if (j.has("style")) e.putString("style", j.optString("style"))
+        if (j.has("mode")) e.putString("mode", j.optString("mode"))
+        if (j.has("contact_styles")) {
+            val o = j.optJSONObject("contact_styles")
+            if (o != null) {
+                val cur = try { JSONObject(sp.getString("styles", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+                for (k in o.keys()) cur.put(Brain.norm(k), o.optString(k))
+                e.putString("styles", cur.toString())
+            }
+        }
         if (j.has("contacts")) e.putString("contacts", toList(j.opt("contacts")).joinToString("|"))
         if (j.has("keywords")) e.putString("keywords", toList(j.opt("keywords")).joinToString("|"))
         e.apply()
@@ -81,6 +90,21 @@ object AutoReply {
         last[Brain.norm(sender)] = System.currentTimeMillis()
         dayCount++
     }
+
+    fun mode(): String = if (::sp.isInitialized) (sp.getString("mode", "reply") ?: "reply") else "reply"
+
+    fun styleFor(sender: String): String {
+        val ns = Brain.norm(sender)
+        val st = try { JSONObject(sp.getString("styles", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+        for (k in st.keys()) if (ns.contains(k) || (k.length >= 3 && k.contains(ns))) return st.optString(k)
+        return style()
+    }
+
+    private val urgent = Regex("(عاجل|ضروري|مستشفى|حادث|طوارئ|الحقني|urgent|emergency|asap|hospital|accident|help me)", RegexOption.IGNORE_CASE)
+    fun isUrgent(text: String): Boolean = urgent.containsMatchIn(text)
+
+    fun isVoiceNote(text: String): Boolean =
+        text.contains("🎤") || text.contains("voice message", true) || text.contains("رسالة صوتية") || text.contains("audio", true)
 
     fun describe(): String {
         if (!enabled()) return "الرد التلقائي مقفول"

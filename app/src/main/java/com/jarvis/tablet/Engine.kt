@@ -19,6 +19,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.PowerManager
 import android.os.Build
 import android.provider.AlarmClock
 import android.provider.CalendarContract
@@ -99,6 +100,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private var syncJob: Job? = null
     private var sleepJob: Job? = null
     private var lastAutoSig = ""
+    @Volatile private var wakeListening = false
+    @Volatile private var pendingFirst: String? = null
+    private val wakeCalls = ArrayDeque<Long>()
+    private val wl by lazy { (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jarvis:session") }
     private val deviceStt by lazy { DeviceStt(ctx) }
     private class AgentResult(val ok: Boolean, val summary: String, val result: String = "")
     private val phraseCache = HashMap<String, Pcm>()
@@ -116,6 +121,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         AutoReply.init(ctx)
         Brain.recentTurns(12).forEach { history.addLast(it) }
         Bus.onWhatsAppMessage = { m -> scope.launch(Dispatchers.IO) { handleAutoReply(m) } }
+        scope.launch(Dispatchers.Default) { wakeLoop() }
         tts = TextToSpeech(ctx) { status ->
             if (status == TextToSpeech.SUCCESS) { ttsReady = true; checkArabicVoice() }
             else Bus.say("err", "محرك الصوت (TTS) مش شغال على الجهاز")
@@ -142,7 +148,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             delay(4000)
             while (isActive) {
                 try { healthCheck() } catch (_: Exception) {}
-                delay(6L * 3600 * 1000)
+                delay(if (Keys.perf == "saver") 24L * 3600 * 1000 else 6L * 3600 * 1000)
             }
         }
         Bus.onTestVoice = { scope.launch(Dispatchers.Default) { deadTts.clear(); speak("This is my voice. Can you hear me, Boss?", false) } }
@@ -166,6 +172,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private suspend fun withBusy(block: suspend () -> Unit) {
         if (busy) { Bus.say("err", "استنى لحظة"); return }
         busy = true
+        acquireWl()
         try {
             block()
         } finally {
@@ -251,6 +258,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     // ------------------------------------------------------------ conversation session (bubble / HUD tap)
     fun bubbleTap() {
+        if (wakeListening) listeningNow = false
         if (sessionActive) { cancelSession(); return }
         if (busy) return
         scope.launch(Dispatchers.Default) { runSession() }
@@ -268,13 +276,16 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         if (!Keys.hasLlm()) { Bus.say("err", "حط مفتاح Groq أو OpenAI الأول"); return }
         if (busy) return
         busy = true
+        var waited = 0
+        while (wakeListening && waited < 1500) { delay(50); waited += 50 }   // let the wake listener release the mic
         sessionActive = true
         voiceMode = true
+        acquireWl()
         try {
-            speak(Config.wakePhrase(), true)
+            if (pendingFirst == null) speak(Config.wakePhrase(), true)
             var round = 0
             while (sessionActive && round < 8) {
-                val text = listenText(if (round == 0) 90 else 70) ?: break
+                val text = (pendingFirst ?: listenText(if (round == 0) 90 else 70)).also { pendingFirst = null } ?: break
                 if (!sessionActive) break
                 if (isNoThanks(text)) { speak(Config.byePhrase(), true); break }
                 thinkState()
@@ -368,7 +379,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         for ((idx, a) in list.withIndex()) {
             val err = runAction(a)
             if (err != null) { reply = err; break }
-            if (idx < list.size - 1) delay(1500)
+            if (idx < list.size - 1) settle()
         }
         agentSummary?.let { reply = it; agentSummary = null }
 
@@ -386,6 +397,10 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** returns an error sentence, or null when OK */
     private suspend fun runAction(a: JSONObject): String? {
+        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "autoreply_set", "study_mode", "voice_message", "sms", "call",
+                "whatsapp", "whatsapp_group", "handoff", "github_save", "run_macro", "teach_start", "close_app", "youtube_play_channel")) {
+            return "الميزة دي مقفولة. افتح التطبيق وادوس UNLOCK"
+        }
         return when (a.optString("type")) {
             "open_app" -> if (doOpenApp(a.optString("app"))) null else "مش لاقي التطبيق ده"
             "web_search" -> {
@@ -439,6 +454,64 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 if (launch(i)) null else "معرفتش اظبط التايمر"
             }
+            "youtube_play_channel" -> {
+                val ch = a.optString("channel")
+                if (ch.isBlank()) "اسم القناة إيه؟" else {
+                    val which = a.optString("which", "latest")
+                    val i = view("https://www.youtube.com/results?search_query=" + enc(ch) + "&sp=EgIQAg%253D%253D")
+                    if (!launch(i)) "معرفتش أفتح يوتيوب" else {
+                        settle(8000)
+                        val goal = "In the YouTube search results, tap the channel named \"$ch\" (the first channel result). On the channel page open the Videos tab" +
+                            (if (which == "popular") " and sort by Popular" else " (it is sorted by Latest by default)") +
+                            ", then tap the first video to play it. Finish only when the video player is open and the video is really playing."
+                        val r = runAgent(goal)
+                        agentSummary = r.summary
+                        null
+                    }
+                }
+            }
+            "close_app" -> {
+                val name = a.optString("app")
+                val pkg = installedApps().firstOrNull { it.first.equals(name, true) || it.first.contains(name, true) || name.contains(it.first, true) }?.second
+                val a11y = JarvisAccessibility.instance
+                if (pkg == null) "مش لاقي التطبيق ده"
+                else if (a11y == null) "فعّل خدمة Jarvis من إمكانية الوصول"
+                else {
+                    launch(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
+                    delay(1500)
+                    var ok = false
+                    repeat(4) {
+                        if (!ok) {
+                            ok = a11y.clickFirst(emptyList(), listOf("Force stop", "Force Stop", "إيقاف إجباري", "فرض الإيقاف"))
+                            if (!ok) delay(700)
+                        }
+                    }
+                    if (ok) {
+                        delay(800)
+                        a11y.clickFirst(emptyList(), listOf("OK", "موافق", "حسنًا", "Force stop", "إيقاف إجباري"))
+                        delay(500)
+                        a11y.global("home")
+                        null
+                    } else {
+                        a11y.logUiFailure("force stop button not found for $pkg")
+                        a11y.global("home")
+                        "رجعت للرئيسية بس معرفتش أوقف التطبيق بالكامل"
+                    }
+                }
+            }
+            "open_chat" -> {
+                val who = a.optString("contact")
+                val title = Brain.findPlace(who)?.optString("title")?.takeIf { it.isNotBlank() } ?: who
+                doWhatsappGroup(title, "", null)
+            }
+            "set_voice" -> {
+                Keys.setVoice(if (a.has("speed")) a.optDouble("speed") else null, if (a.has("pitch")) a.optDouble("pitch") else null,
+                    if (a.has("patience")) a.optInt("patience") else null)
+                null
+            }
+            "wipe_memory" ->
+                if (!confirmAction("Wipe everything I remember about you. This can't be undone. Go ahead, Boss?")) "تمام، الغيتها"
+                else { Brain.wipe(); history.clear(); lastToolResult = ""; null }
             "camera_look" -> {
                 val q = a.optString("question").ifBlank { "اوصفلي اللي قدامي" }
                 if (!Keys.hasCloud() || !isOnline()) "الرؤية من الكاميرا محتاجة إنترنت ومفتاح (Gemini مثلا)"
@@ -468,6 +541,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val on = a.optBoolean("on", true)
                 val mins = a.optInt("minutes", 180).coerceIn(10, 600)
                 Keys.setStudy(on, if (on) System.currentTimeMillis() + mins * 60_000L else 0L)
+                if (on) Bus.say("j", "⚠️ وضع المذاكرة شغال: هرد على المكالمات وأبعت SMS للمتصلين من جهات الاتصال. قول خلصت مذاكرة عشان توقفه.")
                 if (!on) {
                     val missed = Brain.takeNotesByTag("calls")
                     if (missed.isNotEmpty()) agentSummary = "تمام، خلصت مذاكرة. ده اللي فاتك: " + missed.joinToString("، ")
@@ -732,12 +806,16 @@ $extraRules
 - {"type":"project_save","name":"...","spec":"...","progress":"...","builder":"..."}: حفظ مشروع ومتطلباته وتقدمه (مثلا موقع بيتبني في لوفابل)
 - {"type":"handoff","name":"...","to":"Manus"}: لما أداة بناء (زي لوفابل) رصيدها يخلص أو المستخدم عايز يكمل في أداة تانية: بيجهز ملخص كامل بالمشروع واللي اتعمل ويفتح الأداة التانية تكمل من نفس النقطة مش من الصفر
 - {"type":"github_save","path":"...","content":"...","message":"..."}: حفظ ملف في GitHub بتاع المستخدم
+- {"type":"youtube_play_channel","channel":"...","which":"latest|popular"}: لما يقول "افتح قناة X وشغل أول/آخر/أشهر فيديو": بيفتح نتايج القنوات وبيدخل القناة ويشغل الفيديو
+- {"type":"close_app","app":"..."}: قفل تطبيق فعلا (إيقاف إجباري). {"type":"open_chat","contact":"..."}: فتح الشات مع شخص أو جروب في واتساب من غير ما يبعت
+- {"type":"set_voice","speed":1.0,"pitch":1.0,"patience":1200}: سرعة الكلام (0.6-1.6) ودرجة الصوت وصبر الاستماع بالميلي ثانية ("اتكلم أبطأ"، "صوتك تخين")
+- {"type":"wipe_memory"}: مسح كل اللي فاكره عن المستخدم (بعد تأكيد)
 - {"type":"camera_look","question":"...","facing":"back"}: لما المستخدم يقول "شوف اللي قدامي" أو "اشرحلي الصورة دي": بتفتح الكاميرا في الخلفية من غير واجهة وبتصوّر وتوصف اللي قدامه (facing=front للأمامية)
 - {"type":"play_media","query":"اسم الأغنية أو الفيديو","app":"اسم التطبيق (اختياري)"}: تشغيل أغنية أو فيديو بالاسم فعلا (بيجرب الأمر المباشر الأول ثم الشاشة)
 - {"type":"media_control","command":"play|pause|next|previous|stop|seek_forward|seek_back|seek_to|speed","value":10}: تحكم في المشغّل الشغال (value بالثواني، أو سرعة زي 1.5)
 - {"type":"now_playing"}: إيه اللي شغال دلوقتي
 - {"type":"sleep_timer","minutes":30}: وقف الميديا بعد مدة
-- {"type":"autoreply_set","on":true,"contacts":["..."],"everyone":false,"groups":false,"from":22,"to":7,"keywords":[],"only_study":false,"disclose":true,"style":"..."}: رد تلقائي ذكي على رسايل واتساب بالقواعد دي بس. {"type":"autoreply_status"}: حالة الرد التلقائي
+- {"type":"autoreply_set","mode":"reply|notify|both","contact_styles":{"ماما":"حنون ومختصر"},"on":true,"contacts":["..."],"everyone":false,"groups":false,"from":22,"to":7,"keywords":[],"only_study":false,"disclose":true,"style":"..."}: رد تلقائي ذكي على رسايل واتساب بالقواعد دي بس. {"type":"autoreply_status"}: حالة الرد التلقائي
 - {"type":"study_mode","on":true,"minutes":180}: لما المستخدم يقول هيذاكر أو "هقعد أذاكر": بتدخل وضع المذاكرة (بترد على مكالماته وتعرّف بنفسك). "خلصت مذاكرة" => on=false
 - {"type":"voice_message","contact":"...","mode":"me","text":""}: رسالة صوتية واتساب. mode=me: بتسجّل صوت المستخدم نفسه. mode=jarvis: بتنطق text بصوتك
 - {"type":"set_persona","tone":"formal|friend|playful"}: تغيير نبرة كلامك ("خليك رسمي"، "اتكلم زي صاحبي"، "هزّر معايا")
@@ -768,6 +846,8 @@ $extraRules
 - لو المستخدم بيبني مشروع في أداة وعايز يكمل في أداة تانية: استخدم handoff، وقبلها project_save لو المشروع مش محفوظ.
 - لو طلب تشغيل أغنية أو فيديو معين: play_media بالاسم. وللتحكم (وقف، السرعة، اللي بعده، ارجع 10 ثواني): media_control.
 - الرد التلقائي على واتساب: اسأل المستخدم عن مين يرد عليه ولو في أوقات معينة قبل ما تفعّله، وماتفعّلوش لأي حد من نفسك.
+- لو قال "افتح قناة X وشغل (أول|آخر|أشهر) فيديو": youtube_play_channel بدل ما تجمع خطوات بنفسك.
+- لو قال "قفل X": close_app. "افتح الشات مع X": open_chat.
 - لو قال "شوف اللي قدامي": camera_look. ولو قال "اللي على الشاشة": look.
 - لو قال "افتح جروب X" وX موجود في الأماكن اللي اتعلمتها: open_place. ولو بيبعت رسالة للجروب: whatsapp_group بنفس الاسم.
 - لو المستخدم لسه بيعلّمك (قبل teach_stop): متنفذش حاجة تانية، بس أكد إنك بتسجّل.
@@ -1136,18 +1216,18 @@ $extraRules
     // ------------------------------------------------------------ recording
     /** Records until ~1.2s of silence after speech (max 16s). Returns null if nothing was said. */
     @SuppressLint("MissingPermission")
-    private suspend fun recordUtterance(waitFrames: Int = 70): ShortArray? = withContext(Dispatchers.IO) {
+    private suspend fun recordUtterance(waitFrames: Int = 70, quiet: Boolean = false): ShortArray? = withContext(Dispatchers.IO) {
         val rate = 16000
         val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minBuf <= 0) { Bus.say("err", "المايك مش شغال"); return@withContext null }
+        if (minBuf <= 0) { if (!quiet) Bus.say("err", "المايك مش شغال"); return@withContext null }
         val rec = try {
             AudioRecord(Config.audioSource(), rate, AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf * 4, rate * 2))
         } catch (e: Exception) {
-            Bus.say("err", "مش قادر أفتح المايك"); return@withContext null
+            if (!quiet) Bus.say("err", "مش قادر أفتح المايك"); return@withContext null
         }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release(); Bus.say("err", "مش قادر أفتح المايك (اسمح بإذن المايك)"); return@withContext null
+            rec.release(); if (!quiet) Bus.say("err", "مش قادر أفتح المايك (اسمح بإذن المايك)"); return@withContext null
         }
         val frameSize = rate / 10
         val frame = ShortArray(frameSize)
@@ -1184,13 +1264,14 @@ $extraRules
                 }
                 if (started) speech.add(chunk) else { pre.addLast(chunk); if (pre.size > 4) pre.removeFirst() }
                 if (!started && frames > waitFrames) break        // nothing said for ~7s
-                if (started && silent >= 12) break        // 1.2s of silence = done
+                if (started && silent >= Keys.patienceMs / 100) break        // 1.2s of silence = done
             }
         } finally {
             try { rec.stop() } catch (_: Exception) {}
             rec.release()
         }
         if (blocked) {
+            if (quiet) return@withContext null
             Bus.say("err", "المايك مقفول وأنا في الخلفية، فتحتلك التطبيق، اضغط الزر تاني")
             try {
                 ctx.startActivity(Intent(ctx, MainActivity::class.java)
@@ -1371,21 +1452,21 @@ $extraRules
             tries++
             if (tries == 3) { a.launch(li); delay(1600) }
         }
-        if (tries >= 5) return "معرفتش ألاقي البحث في الواتساب"
+        if (tries >= 5) { a.logUiFailure("whatsapp search button not found"); return "معرفتش ألاقي البحث في الواتساب" }
         delay(800)
         var opened = false
         for (n in listOf(group, alt).filter { it.isNotBlank() }.distinct()) {
             if (!a.setTextFirst(listOf("$pkg:id/search_input"), n)) continue
             delay(1600)
             val q = normAr(n)
-            if (q.isNotEmpty() && a.clickTextMatching { t -> normAr(t).let { it == q || it.contains(q) } }) { opened = true; break }
+            if (q.isNotEmpty() && a.clickBestMatch(n)) { opened = true; break }
         }
-        if (!opened) return "مش لاقي جروب اسمه $group"
+        if (!opened) { a.logUiFailure("whatsapp chat \"$group\" not found in results"); return "مش لاقي جروب اسمه $group" }
         delay(1600)
         if (message == null) return null
-        if (!a.setTextFirst(listOf("$pkg:id/entry"), message)) return "معرفتش أكتب الرسالة في الجروب"
+        if (!a.setTextFirst(listOf("$pkg:id/entry"), message)) { a.logUiFailure("whatsapp message box not found"); return "معرفتش أكتب الرسالة في الجروب" }
         delay(600)
-        if (!a.clickFirst(listOf("$pkg:id/send"), listOf("Send", "إرسال"))) return "كتبت الرسالة بس معرفتش أدوس إرسال"
+        if (!a.clickFirst(listOf("$pkg:id/send"), listOf("Send", "إرسال"))) { a.logUiFailure("whatsapp send button not found"); return "كتبت الرسالة بس معرفتش أدوس إرسال" }
         return null
     }
 
@@ -1455,11 +1536,13 @@ Rules:
         if (!Keys.hasCloud() || !isOnline()) return AgentResult(false, "التحكم في الشاشة محتاج إنترنت ومفتاح سحابي (Gemini مثلا). المحرك المحلي لوحده مش بيشوف الشاشة")
         val steps = ArrayList<String>()
         val lang = langNote(goal)
+        var lastFailed = false
         Bus.log("AGENT: $goal")
         for (i in 1..25) {
             if (voiceMode && !sessionActive) return AgentResult(false, "تمام، وقفت")
             val (screen, nodes) = a.dumpScreen()
-            val img = if (Config.agentVision()) screenshotB64() else null
+            val needImg = Config.agentVision() && Keys.perf != "saver" && (i == 1 || lastFailed || nodes.size < 8)
+            val img = if (needImg) screenshotB64() else null
             val user = "GOAL: $goal\nUSER LANGUAGE: $lang\n" +
                 (if (hints.isNotEmpty()) "PAST EXPERIENCE (may help; screens can differ):\n$hints\n" else "") +
                 "STEPS SO FAR:\n" +
@@ -1502,6 +1585,7 @@ Rules:
             }
             steps.add("$i. $act ${if (idx >= 0) idx else ""} ${text.take(40)} -> ${if (ok) "ok" else "FAILED"}")
             if (ok && act != "wait") trace.add(traceStep(act, node, res.optString("app"), res.optString("direction", "up")))
+            lastFailed = !ok
             delay(if (act == "open_app") 1800 else 1100)
         }
         return AgentResult(false, "مخلصتش المهمة في الخطوات المسموحة")
@@ -1876,6 +1960,74 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         }
     }
 
+    // ------------------------------------------------------------ wake lock only while working
+    private fun acquireWl() { try { if (!wl.isHeld) wl.acquire(3 * 60_000L) } catch (_: Exception) {} }
+    private fun releaseWl() { try { if (wl.isHeld) wl.release() } catch (_: Exception) {} }
+
+    /** waits until the screen stops changing (page loaded) instead of sleeping a fixed time */
+    private suspend fun settle(maxMs: Long = 6000) {
+        val a = JarvisAccessibility.instance
+        if (a == null) { delay(1500); return }
+        var last = 0
+        var stable = 0
+        var waited = 0L
+        while (waited < maxMs) {
+            delay(500)
+            waited += 500
+            val h = try { a.dumpScreen(60).first.hashCode() } catch (_: Exception) { 0 }
+            if (h != 0 && h == last) { stable++; if (stable >= 2) return } else { stable = 0; last = h }
+        }
+    }
+
+    // ------------------------------------------------------------ wake by name (local VAD + a quick transcript check)
+    private val wakeWords = listOf("جرجس", "جرجيس", "جورجس", "jarjis", "jarvis", "جارفس", "جارفيس", "yeah boss", "يا بوص")
+
+    private fun hasWake(t: String): Boolean {
+        val n = Brain.norm(t)
+        return wakeWords.any { n.contains(Brain.norm(it)) }
+    }
+
+    private fun stripWake(t: String): String {
+        var n = t
+        for (w in wakeWords) n = n.replace(Regex(Regex.escape(w), RegexOption.IGNORE_CASE), " ")
+        return n.replace(Regex("^[\\s,،.!?]*(يا|ya)?\\s*"), "").trim()
+    }
+
+    private fun wakeAllowed(): Boolean {
+        if (!Keys.wakeOn || busy || listeningNow || sessionActive || callActive) return false
+        if (Keys.perf == "saver") return false
+        if (!(Keys.groq.isNotBlank() || Keys.openai.isNotBlank() || Keys.gemini.isNotBlank())) return false
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isInteractive && Keys.perf != "performance") return false
+        return true
+    }
+
+    private suspend fun wakeLoop() {
+        while (scope.isActive) {
+            if (!wakeAllowed()) { delay(1500); continue }
+            val now = System.currentTimeMillis()
+            while (wakeCalls.isNotEmpty() && now - wakeCalls.first() > 60_000) wakeCalls.removeFirst()
+            if (wakeCalls.size >= 8) { delay(3000); continue }          // protects the free quota and the battery
+            wakeListening = true
+            listeningNow = true
+            val pcm = recordUtterance(70, true)
+            listeningNow = false
+            wakeListening = false
+            if (pcm == null) { delay(250); continue }
+            if (pcm.size < 8000 || pcm.size > 16000 * 5) continue         // 0.5 to 5 seconds only
+            wakeCalls.addLast(System.currentTimeMillis())
+            val text = try {
+                withContext(Dispatchers.IO) { transcribe(toWav(pcm), "auto") }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) { continue }
+            if (!hasWake(text)) continue
+            val rest = stripWake(text)
+            pendingFirst = rest.takeIf { it.length >= 4 }
+            bubbleTap()
+        }
+    }
+
     // ------------------------------------------------------------ confirmation by voice
     private suspend fun confirmAction(spoken: String): Boolean {
         if (!voiceMode || !Config.confirmMessages() || !Keys.hasLlm()) return true
@@ -1885,11 +2037,29 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
     }
 
     // ------------------------------------------------------------ WhatsApp smart auto-reply
+    private fun postAlert(title: String, text: String) {
+        try {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            nm.createNotificationChannel(android.app.NotificationChannel("jarvis_alerts", "Jarvis alerts", android.app.NotificationManager.IMPORTANCE_HIGH))
+            val n = android.app.Notification.Builder(ctx, "jarvis_alerts")
+                .setContentTitle(title).setContentText(text)
+                .setStyle(android.app.Notification.BigTextStyle().bigText(text))
+                .setSmallIcon(android.R.drawable.ic_dialog_info).setAutoCancel(true).build()
+            nm.notify((System.currentTimeMillis() % 100000).toInt() + 100, n)
+        } catch (_: Exception) {}
+    }
+
     private suspend fun handleAutoReply(m: WaMsg) {
         val sig = m.sender + "|" + m.text
         if (sig == lastAutoSig) return
         lastAutoSig = sig
         if (!AutoReply.shouldReply(m.sender, m.text, m.group, Keys.studyActive())) return
+        val urgent = AutoReply.isUrgent(m.text)
+        val mode = AutoReply.mode()
+        if (urgent || mode == "notify" || mode == "both") {
+            postAlert(if (urgent) "⚠️ رسالة مهمة من ${m.sender}" else "رسالة من ${m.sender}", m.text)
+        }
+        if (mode == "notify") { AutoReply.noteReplied(m.sender); return }
         val reply = try {
             withContext(Dispatchers.IO) { generateAutoReply(m) }
         } catch (e: CancellationException) {
@@ -1908,8 +2078,11 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
 
     private fun generateAutoReply(m: WaMsg): String? {
         val facts = Brain.relevant(m.sender + " " + m.text, 4, null).joinToString(" | ")
-        val sys = "You reply to a WhatsApp message on behalf of ${Config.ownerName()}, who is busy right now. Write ONE short natural reply in the sender's language (Egyptian Arabic dialect if Arabic). ${AutoReply.style()} Never promise anything specific, never reveal private information, never confirm payments or commitments. If the message needs the owner, say he will get back to them later. If the message is a verification code, a bank or financial matter, or anything sensitive, reply with an empty string. Reply JSON {\"reply\":\"...\"}."
-        val user = "FROM: ${m.sender}\nMESSAGE: ${m.text}\n" + if (facts.isNotEmpty()) "CONTEXT ABOUT THE SENDER: $facts\n" else ""
+        val voice = AutoReply.isVoiceNote(m.text)
+        val sys = "You reply to a WhatsApp message on behalf of ${Config.ownerName()}, who is busy right now. Write ONE short natural reply in the sender's language (Egyptian Arabic dialect if Arabic). ${AutoReply.styleFor(m.sender)} Understand what the sender really wants before answering. Never promise anything specific, never reveal private information, never confirm payments or commitments. If the message needs the owner, say he will get back to them later. If the message is a verification code, a bank or financial matter, or anything sensitive, reply with an empty string. Reply JSON {\"reply\":\"...\"}."
+        val user = "FROM: ${m.sender}\nMESSAGE: ${m.text}\n" +
+            (if (voice) "NOTE: this is a voice note you cannot hear; ask the sender to type it, or say the owner will listen to it later.\n" else "") +
+            (if (facts.isNotEmpty()) "CONTEXT ABOUT THE SENDER: $facts\n" else "")
         val r = if (Keys.localOn && (Keys.localOnly || !Keys.hasCloud() || !isOnline())) localChat(sys, user, false) else agentChat(sys, user, null)
         return r.optString("reply").trim().takeIf { it.isNotEmpty() }
     }
@@ -2160,6 +2333,7 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
     }
 
     private fun idleState() {
+        releaseWl()
         val rec = JarvisAccessibility.instance?.recording == true
         Bus.state(if (rec) "recording" else "", if (rec) "REC - بسجّل اللي بتعمله" else IDLE)
     }
@@ -2501,6 +2675,9 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         track = t
         try {
             t.write(p.samples, 0, p.samples.size)
+            if (Build.VERSION.SDK_INT >= 23) {
+                try { t.playbackParams = android.media.PlaybackParams().setSpeed(Keys.ttsSpeed).setPitch(Keys.ttsPitch) } catch (_: Exception) {}
+            }
             t.play()
             val total = p.samples.size
             val deadline = System.currentTimeMillis() + total * 1000L / p.rate + 2500
@@ -2558,6 +2735,7 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
             } catch (_: Exception) { null }
             if (v != null) engine.voice = v
         }
+        try { engine.setSpeechRate(Keys.ttsSpeed); engine.setPitch(Keys.ttsPitch) } catch (_: Exception) {}
         try {
             engine.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(if (callAudio) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)

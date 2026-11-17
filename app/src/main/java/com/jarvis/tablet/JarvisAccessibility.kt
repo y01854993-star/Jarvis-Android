@@ -418,6 +418,47 @@ class JarvisAccessibility : AccessibilityService() {
         false
     }
 
+    private fun matchScore(q: String, t: String): Int {
+        if (t == q) return 100
+        if (t.startsWith(q)) return 85
+        if (t.contains(q)) return 70
+        val qt = q.split(" ").filter { it.length >= 2 }.toSet()
+        val tt = t.split(" ").toSet()
+        if (qt.isEmpty()) return 0
+        return qt.count { it in tt } * 60 / qt.size
+    }
+
+    /** taps the visible text that best matches [query] (exact > prefix > contains > shared words) */
+    fun clickBestMatch(query: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val q = Brain.norm(query)
+        if (q.isEmpty()) return false
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = 0
+        fun visit(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 18) return
+            if (!n.isEditable && n.isVisibleToUser) {
+                val t = Brain.norm(n.text?.toString().orEmpty())
+                if (t.isNotEmpty()) {
+                    val sc = matchScore(q, t)
+                    if (sc > bestScore) { bestScore = sc; best = n }
+                }
+            }
+            for (i in 0 until n.childCount) visit(n.getChild(i), depth + 1)
+        }
+        visit(root, 0)
+        val b = best ?: return false
+        return if (bestScore >= 50) tapNode(b) else false
+    }
+
+    /** writes what was on screen when something failed, so the cause can be found later */
+    fun logUiFailure(what: String) {
+        try {
+            val snap = dumpScreen(40).first.replace("\n", " | ").take(500)
+            Problems.add("UI: $what || $snap")
+        } catch (_: Exception) {}
+    }
+
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {
         var cur: AccessibilityNodeInfo? = node
         var depth = 0

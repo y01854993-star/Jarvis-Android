@@ -27,8 +27,7 @@ class JarvisService : Service() {
         super.onCreate()
         Config.load(this)
         promote()
-        wake = (getSystemService(POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jarvis:engine").also { it.acquire() }
+        // no permanent wake lock: the engine holds one only while a session or task runs
         if (engine == null) engine = Engine(this, scope).also { it.start() }
         ensureBubble()
     }

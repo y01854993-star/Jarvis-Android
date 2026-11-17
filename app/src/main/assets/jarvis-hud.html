@@ -125,26 +125,37 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
 <div id="micNote" aria-live="polite"></div>
 
 <div class="panel" id="setupPanel">
-  <h2>AI CONFIGURATION</h2>
-  <div class="ig"><label>اسمك</label><input type="text" id="kName" placeholder="مثلاً: يا توني"></div>
-  <div class="ig"><label>OpenAI (GPT) Key</label><input type="password" id="kGpt" placeholder="sk-..."></div>
-  <div class="ig"><label>Groq Key (مجاني)</label><input type="password" id="kGroq" placeholder="gsk_..."></div>
-  <div class="ig"><label>Gemini API Key (مجاني - الأفضل: عقل + صوت + شاشة)</label><input type="password" id="kGem" placeholder="AIza..."></div>
-  <div class="ig" id="localBox">
-    <label>Local Server URL (llama.cpp - بدون إنترنت)</label>
-    <input type="text" id="kLocalUrl" placeholder="http://127.0.0.1:8080/v1" value="http://127.0.0.1:8080/v1">
-    <label style="margin-top:8px;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cLocal" style="width:18px;height:18px;padding:0;flex:none"> استخدم المحرك المحلي (Local LLM)</label>
-    <label style="margin-top:6px;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cLocalOnly" checked style="width:18px;height:18px;padding:0;flex:none"> محلي فقط (من غير إنترنت ولا سحابة)</label>
-    <label style="margin-top:6px;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cSttDev" style="width:18px;height:18px;padding:0;flex:none"> التعرف على الصوت من الجهاز (SpeechRecognizer)</label>
-    <button type="button" id="testLocalBtn" onclick="testLocal()" style="background:#1e6fe0;color:#fff;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">TEST LOCAL SERVER</button>
-  </div>
-  <div class="ig" id="fishBox"><label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key"><label style="margin-top:6px">Fish Voice ID (الصق رابط الصوت كامل fish.audio/m/... أو الـ ID)</label><input type="text" id="kFishV" placeholder="https://fish.audio/m/..."></div>
-  <div class="ig" id="extraBox"><label>DeepSeek Key (اختياري)</label><input type="password" id="kDs" placeholder="sk-..."><label style="margin-top:6px">Kimi (Moonshot) Key (اختياري)</label><input type="password" id="kKimi" placeholder="sk-..."><label style="margin-top:6px">GitHub Token (لحفظ الذاكرة والمشاريع)</label><input type="password" id="kGh" placeholder="ghp_... / github_pat_..."><label style="margin-top:6px">GitHub Repo (owner/name)</label><input type="text" id="kGhRepo" placeholder="username/jarvis-brain"></div>
+  <h2>SETUP</h2>
+  <div class="ig"><label>اسمك</label><input type="text" id="kName" placeholder="Boss"></div>
+  <div class="ig"><label>Gemini API Key — المفتاح الأساسي (مجاني). لوحده بيشغّل: فهم الصوت + العقل + الصوت + الشاشة + الكاميرا</label><input type="password" id="kGem" placeholder="AIza..."><div style="font-size:12px;color:var(--mu);margin-top:4px">من: aistudio.google.com/apikey</div></div>
+  <details id="advBox" style="margin-bottom:8px"><summary style="color:var(--cy);cursor:pointer;padding:6px 0">إعدادات متقدمة (اختيارية)</summary>
+    <div class="ig"><label>Groq Key (مجاني) — بديل سريع لفهم الصوت والعقل</label><input type="password" id="kGroq" placeholder="gsk_..."></div>
+    <div class="ig"><label>OpenAI Key (مدفوع) — اختياري</label><input type="password" id="kGpt" placeholder="sk-..."></div>
+    <div class="ig" id="localBox">
+      <label>Local Server URL (llama.cpp - بدون إنترنت)</label>
+      <input type="text" id="kLocalUrl" placeholder="http://127.0.0.1:8080/v1" value="http://127.0.0.1:8080/v1">
+      <label style="margin-top:8px;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cLocal" style="width:18px;height:18px;padding:0;flex:none"> استخدم المحرك المحلي (Local LLM)</label>
+      <label style="margin-top:6px;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cLocalOnly" checked style="width:18px;height:18px;padding:0;flex:none"> محلي فقط (من غير إنترنت ولا سحابة)</label>
+      <label style="margin-top:6px;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cSttDev" style="width:18px;height:18px;padding:0;flex:none"> التعرف على الصوت من الجهاز (SpeechRecognizer)</label>
+      <button type="button" id="testLocalBtn" onclick="testLocal()" style="background:#1e6fe0;color:#fff;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">TEST LOCAL SERVER</button>
+    </div>
+    <div class="ig" id="fishBox"><label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" placeholder="Fish API key"><label style="margin-top:6px">Fish Voice ID (الصق رابط الصوت كامل أو الـ ID)</label><input type="text" id="kFishV" placeholder="https://fish.audio/m/..."></div>
+    <div class="ig" id="extraBox"><label>DeepSeek Key (اختياري)</label><input type="password" id="kDs" placeholder="sk-..."><label style="margin-top:6px">Kimi (Moonshot) Key (اختياري)</label><input type="password" id="kKimi" placeholder="sk-..."><label style="margin-top:6px">GitHub Token (لحفظ الذاكرة والمشاريع)</label><input type="password" id="kGh" placeholder="ghp_... / github_pat_..."><label style="margin-top:6px">GitHub Repo (owner/name)</label><input type="text" id="kGhRepo" placeholder="username/jarvis-brain"></div>
+    <div class="ig"><label>وضع الأداء والبطارية</label>
+      <select id="selPerf"><option value="balanced">متوازن (الافتراضي)</option><option value="performance">أداء عالي (استماع حتى والشاشة مقفولة)</option><option value="saver">توفير طاقة (من غير استماع تلقائي ولا لقطات شاشة)</option></select></div>
+    <label style="margin:6px 0;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cWake" style="width:18px;height:18px;padding:0;flex:none"> الاستيقاظ بالاسم ("يا جرجس" / "Yeah Boss") - بيستخدم فهم الصوت على الجمل القصيرة بس</label>
+    <label style="margin:6px 0;display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="cLock" style="width:18px;height:18px;padding:0;flex:none"> اقفل الميزات الحساسة (رد تلقائي، تحكم، مكالمات، رسايل) ببصمة/قفل الجهاز</label>
+    <div class="ig"><label>سرعة الكلام</label><input type="range" id="rSpeed" min="0.6" max="1.6" step="0.05" value="1"></div>
+    <div class="ig"><label>درجة الصوت</label><input type="range" id="rPitch" min="0.6" max="1.6" step="0.05" value="1"></div>
+    <div class="ig"><label>صبر الاستماع (كام ملي ثانية صمت قبل ما أعتبر إنك خلصت)</label><input type="range" id="rPat" min="600" max="2500" step="100" value="1200"></div>
+  </details>
   <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
   <button id="healthBtn" type="button" onclick="healthCheck()" style="background:#34d399;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">HEALTH CHECK</button>
   <button id="studyBtn" type="button" onclick="toggleStudy()" style="background:#fbbf24;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">STUDY MODE ON/OFF</button>
   <button id="testVoiceBtn" type="button" onclick="testVoice()" style="background:#22d3ee;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">TEST VOICE</button>
+  <button id="unlockBtn" type="button" onclick="unlockFeatures()" style="background:#a78bfa;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">UNLOCK (بصمة / قفل الجهاز)</button>
   <button id="resetKeys" onclick="resetKeys()" style="background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">RESET ALL KEYS</button>
+  <button id="wipeBtn" type="button" onclick="wipeData()" style="background:#7f1d1d;color:#fff;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">WIPE ALL DATA (ذاكرة + مفاتيح)</button>
 </div>
 
 <div class="panel">
@@ -232,11 +243,14 @@ function saveKeys(){
   keys.groq=$("kGroq").value.trim();
   keys.gem=$("kGem").value.trim();
   userName=$("kName").value.trim() || "Boss";
-  localStorage.setItem("k_gpt",keys.gpt); localStorage.setItem("k_groq",keys.groq); localStorage.setItem("k_gem",keys.gem);
-  localStorage.setItem("k_fish",$("kFish").value.trim()); localStorage.setItem("k_fishv",$("kFishV").value.trim());
-  localStorage.setItem("k_localurl",$("kLocalUrl").value.trim()); localStorage.setItem("k_localon",$("cLocal").checked?"1":"0"); localStorage.setItem("k_localonly",$("cLocalOnly").checked?"1":"0"); localStorage.setItem("k_sttdev",$("cSttDev").checked?"1":"0");
-  localStorage.setItem("k_ds",$("kDs").value.trim()); localStorage.setItem("k_kimi",$("kKimi").value.trim()); localStorage.setItem("k_gh",$("kGh").value.trim()); localStorage.setItem("k_ghrepo",$("kGhRepo").value.trim());
-  localStorage.setItem("jv_name",userName);
+  const set=(k,v)=>localStorage.setItem(k,v);
+  set("k_gpt",keys.gpt); set("k_groq",keys.groq); set("k_gem",keys.gem);
+  set("k_fish",$("kFish").value.trim()); set("k_fishv",$("kFishV").value.trim());
+  set("k_localurl",$("kLocalUrl").value.trim()); set("k_localon",$("cLocal").checked?"1":"0"); set("k_localonly",$("cLocalOnly").checked?"1":"0"); set("k_sttdev",$("cSttDev").checked?"1":"0");
+  set("k_ds",$("kDs").value.trim()); set("k_kimi",$("kKimi").value.trim()); set("k_gh",$("kGh").value.trim()); set("k_ghrepo",$("kGhRepo").value.trim());
+  set("k_perf",$("selPerf").value); set("k_wake",$("cWake").checked?"1":"0"); set("k_lock",$("cLock").checked?"1":"0");
+  set("k_speed",$("rSpeed").value); set("k_pitch",$("rPitch").value); set("k_pat",$("rPat").value);
+  set("jv_name",userName);
   checkKeys(); addLog("j",`Keys saved. Hello ${userName}.`);
 }
 function testLocal(){
@@ -255,11 +269,18 @@ function toggleKeys(){
   if(open) p.scrollIntoView({behavior:"smooth",block:"center"});
 }
 function resetKeys(){
-  ["k_gpt","k_groq","k_gem","k_fish","k_fishv","k_ds","k_kimi","k_gh","k_ghrepo","k_localurl","k_localon","k_localonly","k_sttdev"].forEach(k=>localStorage.removeItem(k));
-  $("kLocalUrl").value="http://127.0.0.1:8080/v1"; $("cLocal").checked=false; $("cLocalOnly").checked=true; $("cSttDev").checked=false;
+  ["k_gpt","k_groq","k_gem","k_fish","k_fishv","k_ds","k_kimi","k_gh","k_ghrepo","k_localurl","k_localon","k_localonly","k_sttdev","k_perf","k_wake","k_lock","k_speed","k_pitch","k_pat"].forEach(k=>localStorage.removeItem(k));
   keys.gpt=""; keys.groq=""; keys.gem="";
   ["kGpt","kGroq","kGem","kFish","kFishV","kDs","kKimi","kGh","kGhRepo"].forEach(i=>{ $(i).value=""; });
+  $("kLocalUrl").value="http://127.0.0.1:8080/v1"; $("cLocal").checked=false; $("cLocalOnly").checked=true; $("cSttDev").checked=false;
+  $("selPerf").value="balanced"; $("cWake").checked=false; $("cLock").checked=false; $("rSpeed").value=1; $("rPitch").value=1; $("rPat").value=1200;
   checkKeys(); addLog("j","All keys cleared.");
+}
+function unlockFeatures(){ if(window.AndroidBridge) AndroidBridge.unlock(); else addLog("err","بيشتغل جوه تطبيق الأندرويد بس"); }
+let wipeArm=0;
+function wipeData(){
+  if(Date.now()-wipeArm>5000){ wipeArm=Date.now(); addLog("err","⚠️ اضغط WIPE تاني خلال 5 ثواني لتأكيد مسح كل حاجة"); return; }
+  wipeArm=0; resetKeys(); if(window.AndroidBridge) AndroidBridge.wipeAll();
 }
 function checkKeys(){
   const c=Object.values(keys).filter(k=>k).length + (localStorage.getItem("k_localon")==="1"?1:0);
@@ -267,7 +288,13 @@ function checkKeys(){
   $("vAi").textContent=c?`${c} Models Ready`:"Missing";
   $("rAi").className=c?"row on":"row";
 }
-$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kGem").value=keys.gem; $("kFish").value=localStorage.getItem("k_fish")||""; $("kFishV").value=localStorage.getItem("k_fishv")||""; $("kLocalUrl").value=localStorage.getItem("k_localurl")||"http://127.0.0.1:8080/v1"; $("cLocal").checked=localStorage.getItem("k_localon")==="1"; $("cLocalOnly").checked=localStorage.getItem("k_localonly")!=="0"; $("cSttDev").checked=localStorage.getItem("k_sttdev")==="1"; $("kDs").value=localStorage.getItem("k_ds")||""; $("kKimi").value=localStorage.getItem("k_kimi")||""; $("kGh").value=localStorage.getItem("k_gh")||""; $("kGhRepo").value=localStorage.getItem("k_ghrepo")||""; $("kName").value=userName; checkKeys();
+$("kGpt").value=keys.gpt; $("kGroq").value=keys.groq; $("kGem").value=keys.gem;
+$("kFish").value=localStorage.getItem("k_fish")||""; $("kFishV").value=localStorage.getItem("k_fishv")||"";
+$("kLocalUrl").value=localStorage.getItem("k_localurl")||"http://127.0.0.1:8080/v1"; $("cLocal").checked=localStorage.getItem("k_localon")==="1"; $("cLocalOnly").checked=localStorage.getItem("k_localonly")!=="0"; $("cSttDev").checked=localStorage.getItem("k_sttdev")==="1";
+$("kDs").value=localStorage.getItem("k_ds")||""; $("kKimi").value=localStorage.getItem("k_kimi")||""; $("kGh").value=localStorage.getItem("k_gh")||""; $("kGhRepo").value=localStorage.getItem("k_ghrepo")||"";
+$("selPerf").value=localStorage.getItem("k_perf")||"balanced"; $("cWake").checked=localStorage.getItem("k_wake")==="1"; $("cLock").checked=localStorage.getItem("k_lock")==="1";
+$("rSpeed").value=localStorage.getItem("k_speed")||1; $("rPitch").value=localStorage.getItem("k_pitch")||1; $("rPat").value=localStorage.getItem("k_pat")||1200;
+$("kName").value=userName; checkKeys();
 
 function getSystemPrompt() {
   return `أنت J.A.R.V.I.S. مساعد شخصي ذكي جداً. المستخدم هو "${userName}". بتناديه دايماً "${userName}" أو "يا فندم".

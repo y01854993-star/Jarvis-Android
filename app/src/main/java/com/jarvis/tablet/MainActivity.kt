@@ -35,6 +35,15 @@ class MainActivity : Activity() {
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun testVoice() { Bus.onTestVoice?.invoke() }
             @JavascriptInterface fun testHealth() { Bus.onHealth?.invoke() }
+            @JavascriptInterface fun unlock() { runOnUiThread { requestUnlock() } }
+            @JavascriptInterface fun wipeAll() {
+                try {
+                    Brain.init(this@MainActivity); Brain.wipe()
+                    Keys.init(this@MainActivity); Keys.wipeAll()
+                    for (n in listOf("jarvis_autoreply", "jarvis_health", "jarvis_memory")) { try { deleteSharedPreferences(n) } catch (_: Exception) {} }
+                    Bus.say("j", "🧹 اتمسحت الذاكرة والمفاتيح والإعدادات")
+                } catch (_: Exception) {}
+            }
             @JavascriptInterface fun toggleStudy() { Bus.onToggleStudy?.invoke() }
             @JavascriptInterface fun setKeys(json: String) {
                 try { Keys.save(JSONObject(json)) } catch (_: Exception) {}
@@ -119,6 +128,27 @@ class MainActivity : Activity() {
         private var askedNotif = false
         private var askedWrite = false
         private var askedBattery = false
+    }
+
+    private fun requestUnlock() {
+        val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
+        if (!km.isDeviceSecure) {
+            Keys.unlockFor(10 * 60_000L)
+            Bus.say("j", "مفيش قفل شاشة على الجهاز، فتحت الميزات لمدة 10 دقايق")
+            return
+        }
+        @Suppress("DEPRECATION")
+        val i = km.createConfirmDeviceCredentialIntent("Jarvis", "افتح الميزات المقفولة")
+        if (i != null) startActivityForResult(i, 77)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 77 && resultCode == RESULT_OK) {
+            Keys.unlockFor(10 * 60_000L)
+            Bus.say("j", "🔓 اتفتحت الميزات لمدة 10 دقايق")
+        }
     }
 
     override fun onDestroy() {
