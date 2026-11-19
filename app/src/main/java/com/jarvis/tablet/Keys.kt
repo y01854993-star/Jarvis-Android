@@ -9,6 +9,7 @@ import org.json.JSONObject
 object Keys {
     private lateinit var sp: SharedPreferences
     private val cache = HashMap<String, String>()
+    @Volatile var version = 0
 
     @Synchronized
     fun init(ctx: Context) {
@@ -91,6 +92,7 @@ object Keys {
     }
 
     fun save(json: JSONObject) {
+        version++
         val e = sp.edit()
         sput(e, "openai", json.optString("gpt"))
         sput(e, "groq", json.optString("groq"))
