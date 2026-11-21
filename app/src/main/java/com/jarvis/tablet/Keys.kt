@@ -46,10 +46,12 @@ object Keys {
     val ds: String get() = sget("ds")
     val kimi: String get() = sget("kimi")
     val ghToken: String get() = sget("ghtoken")
+    val freeKey: String get() = sget("freekey")
 
     // ---- plain settings
     val name: String get() = (sp.getString("name", "") ?: "").trim().let { if (it.isBlank() || it == "يا فندم") "Boss" else it }
     val ghRepo: String get() = sp.getString("ghrepo", "") ?: ""
+    val freeUrl: String get() = (sp.getString("freeurl", "") ?: "").ifBlank { "http://127.0.0.1:3001/v1" }
     val fishVoice: String get() {
         val raw = sp.getString("fishvoice", "") ?: ""
         return Regex("[0-9a-fA-F]{32}").find(raw)?.value ?: raw.trim()
@@ -66,7 +68,7 @@ object Keys {
     val lockOn: Boolean get() = sp.getBoolean("lock", false)
     val tone: String get() = sp.getString("tone", "friend") ?: "friend"
 
-    fun hasCloud() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank() || ds.isNotBlank() || kimi.isNotBlank()
+    fun hasCloud() = groq.isNotBlank() || openai.isNotBlank() || gemini.isNotBlank() || ds.isNotBlank() || kimi.isNotBlank() || freeKey.isNotBlank()
     fun hasLlm() = hasCloud() || localOn
 
     fun studyActive(): Boolean =
@@ -101,6 +103,8 @@ object Keys {
         sput(e, "ds", json.optString("ds"))
         sput(e, "kimi", json.optString("kimi"))
         sput(e, "ghtoken", json.optString("gh"))
+        sput(e, "freekey", json.optString("freekey"))
+        e.putString("freeurl", json.optString("freeurl").trim())
         e.putString("name", json.optString("name").trim())
         e.putString("fishvoice", json.optString("fishv").trim())
         e.putString("ghrepo", json.optString("ghrepo").trim())
