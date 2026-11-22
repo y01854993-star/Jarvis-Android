@@ -28,6 +28,14 @@ jobs:
         with:
           name: jarvis-apk-build-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish preview (branches, pre-release only)
+        if: github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk jarvis-preview.apk
+          gh release delete preview --yes --cleanup-tag || true
+          gh release create preview jarvis-preview.apk --prerelease --title "Jarvis preview (${{ github.ref_name }})" --notes "Test build from branch ${{ github.ref_name }}, commit ${{ github.sha }}. Not the stable release." --target "${{ github.sha }}"
       - name: Publish release
         if: github.ref == 'refs/heads/main'
         env:
