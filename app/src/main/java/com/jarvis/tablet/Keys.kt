@@ -61,6 +61,7 @@ object Keys {
     val sttDevice: Boolean get() = sp.getBoolean("sttdev", false)
     val localUrl: String get() = (sp.getString("localurl", "") ?: "").ifBlank { "http://127.0.0.1:8080/v1" }
     val wakeOn: Boolean get() = sp.getBoolean("wake", false)
+    val wakeLocal: Boolean get() = sp.getBoolean("wakelocal", true)
     val perf: String get() = sp.getString("perf", "balanced") ?: "balanced"
     val ttsSpeed: Float get() = sp.getFloat("speed", 1.0f)
     val ttsPitch: Float get() = sp.getFloat("pitch", 1.0f)

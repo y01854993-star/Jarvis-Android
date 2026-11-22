@@ -1508,7 +1508,10 @@ Rules:
 - If the screen is empty or blocked by the app, do "fail" and say so in "summary".
 - A screenshot of the current screen is attached. Use it together with the element list, and trust it for what is visually on screen (thumbnails, video titles, channel names) when labels are missing.
 - Playing the latest video of a channel: search the channel name, tap the channel result (or open its profile), open its "Videos" tab, make sure it is sorted by "Latest", then tap the first (newest) video. Avoid Shorts and ads unless asked.
-- After a tap that loads something, use do="wait" once before judging the result."""
+- After a tap that loads something, use do="wait" once before judging the result.
+- If the GOAL has several parts (for example "open X and then do Y", or parts joined by "and then" / "و بعدين" / "وبعدها"), do them strictly in order. Use do="done" only after the LAST part is really finished, and mention every part in "summary".
+- A step marked "(screen did not change)" or "(STUCK)" did not work: do NOT repeat it. Try another element, scroll, go back, or a different path.
+- Before open_app, if the CURRENT SCREEN already shows the right app (see "app:" on the first line), skip open_app."""
 
     private suspend fun runAgent(goal: String): AgentResult {
         val trace = ArrayList<String>()
@@ -1537,10 +1540,19 @@ Rules:
         val steps = ArrayList<String>()
         val lang = langNote(goal)
         var lastFailed = false
+        var prevSig = 0
+        var prevSigValid = false
+        var prevWasUiAction = false
+        val recentActs = ArrayList<String>()
         Bus.log("AGENT: $goal")
-        for (i in 1..25) {
+        for (i in 1..30) {
             if (voiceMode && !sessionActive) return AgentResult(false, "تمام، وقفت")
             val (screen, nodes) = a.dumpScreen()
+            val sig = screen.hashCode()
+            if (prevSigValid && prevWasUiAction && sig == prevSig && steps.isNotEmpty() && !steps.last().contains("screen did not change")) {
+                steps[steps.lastIndex] = steps.last() + " (screen did not change)"
+                lastFailed = true
+            }
             val needImg = Config.agentVision() && Keys.perf != "saver" && (i == 1 || lastFailed || nodes.size < 8)
             val img = if (needImg) screenshotB64() else null
             val user = "GOAL: $goal\nUSER LANGUAGE: $lang\n" +
@@ -1572,6 +1584,18 @@ Rules:
                 if (ans == null || !isYes(ans)) return AgentResult(false, "تمام، وقفت")
             }
 
+            val actKey = "$act|$idx|${text.take(20)}|${res.optString("direction")}|${res.optString("app")}"
+            recentActs.add(actKey)
+            val repeats = recentActs.takeLast(6).count { it == actKey }
+            if (repeats >= 5) return AgentResult(false, "علقت في نفس الخطوة ومقدرتش أكمل")
+            if (repeats >= 3 && act != "wait") {
+                steps.add("$i. $act ${if (idx >= 0) idx else ""} -> skipped (STUCK: same step repeated, choose a different action)")
+                lastFailed = true
+                prevSigValid = false
+                delay(400)
+                continue
+            }
+
             val node = nodes.getOrNull(idx)
             val ok = when (act) {
                 "click" -> node?.let { a.tapNode(it) } ?: false
@@ -1586,6 +1610,9 @@ Rules:
             steps.add("$i. $act ${if (idx >= 0) idx else ""} ${text.take(40)} -> ${if (ok) "ok" else "FAILED"}")
             if (ok && act != "wait") trace.add(traceStep(act, node, res.optString("app"), res.optString("direction", "up")))
             lastFailed = !ok
+            prevSig = sig
+            prevSigValid = true
+            prevWasUiAction = ok && act in listOf("click", "long_click", "type")
             delay(if (act == "open_app") 1800 else 1100)
         }
         return AgentResult(false, "مخلصتش المهمة في الخطوات المسموحة")
@@ -1996,15 +2023,38 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
     private fun wakeAllowed(): Boolean {
         if (!Keys.wakeOn || busy || listeningNow || sessionActive || callActive) return false
         if (Keys.perf == "saver") return false
-        if (!(Keys.groq.isNotBlank() || Keys.openai.isNotBlank() || Keys.gemini.isNotBlank())) return false
+        if (!localWake() && !(Keys.groq.isNotBlank() || Keys.openai.isNotBlank() || Keys.gemini.isNotBlank())) return false
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!pm.isInteractive && Keys.perf != "performance") return false
         return true
     }
 
+    /** true when the phone can recognise speech fully on-device: wake detection then costs no API quota and sends no audio out */
+    private fun localWake(): Boolean = Keys.wakeLocal && Build.VERSION.SDK_INT >= 33 &&
+        android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)
+
     private suspend fun wakeLoop() {
+        var localFails = 0
         while (scope.isActive) {
             if (!wakeAllowed()) { delay(1500); continue }
+            if (localWake()) {
+                wakeListening = true
+                listeningNow = true
+                val heard = try {
+                    deviceStt.listen(Config.sttLang()) { }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) { null }
+                listeningNow = false
+                wakeListening = false
+                if (heard.isNullOrBlank()) { localFails++; delay(minOf(400L * localFails, 5000L)); continue }
+                localFails = 0
+                if (!hasWake(heard)) continue
+                val restLocal = stripWake(heard)
+                pendingFirst = restLocal.takeIf { it.length >= 4 }
+                bubbleTap()
+                continue
+            }
             val now = System.currentTimeMillis()
             while (wakeCalls.isNotEmpty() && now - wakeCalls.first() > 60_000) wakeCalls.removeFirst()
             if (wakeCalls.size >= 8) { delay(3000); continue }          // protects the free quota and the battery
