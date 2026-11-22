@@ -91,6 +91,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var voiceMode = false
     private val bad = HashMap<String, Pair<Long, Int>>()
     @Volatile private var agentSummary: String? = null
+    private var studyEndJob: kotlinx.coroutines.Job? = null
     @Volatile private var lastToolResult = ""
     private var summarizing = false
     private var recordingName = ""
@@ -153,6 +154,25 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         }
         Bus.onTestVoice = { scope.launch(Dispatchers.Default) { deadTts.clear(); speak("This is my voice. Can you hear me, Boss?", false) } }
         scope.launch(Dispatchers.IO) { delay(2500); prewarm() }
+        scope.launch(Dispatchers.IO) {
+            delay(6000)
+            try {
+                if (GitHub.configured() && Brain.isBlank()) {
+                    val remote = GitHub.read("brain/memory.json")
+                    if (remote != null && Brain.restoreFrom(remote)) {
+                        Brain.recentTurns(12).forEach { history.addLast(it) }
+                        Bus.say("j", "🧠 رجّعت ذاكرتي من GitHub")
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        scope.launch(Dispatchers.IO) {
+            delay(90_000)
+            while (isActive) {
+                try { reportProblems() } catch (_: Exception) {}
+                delay(6L * 3600 * 1000)
+            }
+        }
         pushStatus()
         Bus.log("Jarvis engine online")
         if (!Keys.hasLlm()) Bus.say("err", "حط مفتاح Groq أو OpenAI في الخانة اللي فوق")
@@ -541,9 +561,17 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val on = a.optBoolean("on", true)
                 val mins = a.optInt("minutes", 180).coerceIn(10, 600)
                 Keys.setStudy(on, if (on) System.currentTimeMillis() + mins * 60_000L else 0L)
-                if (on) Bus.say("j", "⚠️ وضع المذاكرة شغال: هرد على المكالمات وأبعت SMS للمتصلين من جهات الاتصال. قول خلصت مذاكرة عشان توقفه.")
+                studyEndJob?.cancel()
+                if (on) studyEndJob = scope.launch {
+                    delay(mins * 60_000L + 2000L)
+                    if (!Keys.studyActive()) {
+                        val missedAtEnd = Brain.takeNotesByTag("calls") + Brain.takeNotesByTag("autoreply")
+                        if (missedAtEnd.isNotEmpty()) postAlert("📚 خلصت المذاكرة", missedAtEnd.joinToString(" • ").take(600))
+                    }
+                }
+                if (on) Bus.say("j", "⚠️ وضع المذاكرة شغال: هرد على المكالمات وعلى رسايل واتساب وأبلغهم إنك بتذاكر. قول خلصت مذاكرة عشان توقفه.")
                 if (!on) {
-                    val missed = Brain.takeNotesByTag("calls")
+                    val missed = Brain.takeNotesByTag("calls") + Brain.takeNotesByTag("autoreply")
                     if (missed.isNotEmpty()) agentSummary = "تمام، خلصت مذاكرة. ده اللي فاتك: " + missed.joinToString("، ")
                 }
                 null
@@ -2177,10 +2205,39 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         }
     }
 
+    private fun studyNote(): String {
+        if (!Keys.studyActive()) return ""
+        val until = Keys.studyUntil()
+        val t = SimpleDateFormat("h:mm a", Locale("ar")).format(Date(until))
+        val left = ((until - System.currentTimeMillis()) / 60_000L).coerceAtLeast(1)
+        return "IMPORTANT: ${Config.ownerName()} is studying right now, until about $t (around $left minutes left). Tell the sender that clearly and kindly, and that he will call or reply as soon as he finishes."
+    }
+
+    private val reportSp by lazy { ctx.getSharedPreferences("jarvis_report", Context.MODE_PRIVATE) }
+
+    private fun sanitizeForReport(s: String): String =
+        s.replace(Regex("\\+?\\d[\\d\\s-]{6,}\\d"), "<number>").replace(Regex("[\\w.+-]+@[\\w-]+\\.[\\w.]+"), "<email>")
+
+    /** sends new lines of the problems log to the GitHub repo as an issue; a repo workflow then proposes a fix as a pull request */
+    private fun reportProblems() {
+        if (!Keys.autoReport || !GitHub.configured()) return
+        val lines = Problems.lines()
+        if (lines.isEmpty()) return
+        val lastSent = reportSp.getString("last", "") ?: ""
+        val idx = if (lastSent.isEmpty()) -1 else lines.lastIndexOf(lastSent)
+        val fresh = if (idx >= 0) lines.drop(idx + 1) else lines.takeLast(20)
+        if (fresh.isEmpty()) return
+        val body = StringBuilder("Automatic report from the Jarvis app.\n\nAndroid SDK: ${Build.VERSION.SDK_INT}\n\n```\n")
+        fresh.takeLast(40).forEach { body.append(sanitizeForReport(it)).append('\n') }
+        body.append("```\n")
+        val title = "Jarvis problems " + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
+        if (GitHub.createIssue(title, body.toString(), listOf("jarvis-problem"))) reportSp.edit().putString("last", lines.last()).apply()
+    }
+
     private fun generateAutoReply(m: WaMsg): String? {
         val facts = Brain.relevant(m.sender + " " + m.text, 4, null).joinToString(" | ")
         val voice = AutoReply.isVoiceNote(m.text)
-        val sys = "You reply to a WhatsApp message on behalf of ${Config.ownerName()}, who is busy right now. Write ONE short natural reply in the sender's language (Egyptian Arabic dialect if Arabic). ${AutoReply.styleFor(m.sender)} Understand what the sender really wants before answering. Never promise anything specific, never reveal private information, never confirm payments or commitments. If the message needs the owner, say he will get back to them later. If the message is a verification code, a bank or financial matter, or anything sensitive, reply with an empty string. Reply JSON {\"reply\":\"...\"}."
+        val sys = "You reply to a WhatsApp message on behalf of ${Config.ownerName()}, who is busy right now. Write ONE short natural reply in the sender's language (Egyptian Arabic dialect if Arabic). ${AutoReply.styleFor(m.sender)} ${studyNote()} Understand what the sender really wants before answering. Never promise anything specific, never reveal private information, never confirm payments or commitments. If the message needs the owner, say he will get back to them later. If the message is a verification code, a bank or financial matter, or anything sensitive, reply with an empty string. Reply JSON {\"reply\":\"...\"}."
         val user = "FROM: ${m.sender}\nMESSAGE: ${m.text}\n" +
             (if (voice) "NOTE: this is a voice note you cannot hear; ask the sender to type it, or say the owner will listen to it later.\n" else "") +
             (if (facts.isNotEmpty()) "CONTEXT ABOUT THE SENDER: $facts\n" else "")

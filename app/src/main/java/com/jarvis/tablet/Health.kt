@@ -36,7 +36,14 @@ object Health {
             else -> "خطأ ${e.code}"
         }
         val ed = sp.edit().putInt("fails_$p", n).putString("why_$p", why)
-        if (hard || n >= 3) ed.putLong("until_$p", System.currentTimeMillis() + DAY)
+        // hard failures (bad key, no credit) = a day; plain rate limit = 3 minutes so the next model takes over right away
+        val cool = when {
+            hard -> DAY
+            e.code == 429 -> 3L * 60 * 1000
+            n >= 3 -> 15L * 60 * 1000
+            else -> 0L
+        }
+        if (cool > 0) ed.putLong("until_$p", System.currentTimeMillis() + cool)
         ed.apply()
     }
 }

@@ -59,6 +59,12 @@ object GitHub {
         return c2 == 200 || c2 == 201
     }
 
+    fun createIssue(title: String, body: String, labels: List<String>): Boolean {
+        val j = JSONObject().put("title", title.take(200)).put("body", body.take(60000)).put("labels", JSONArray(labels))
+        val (c, _) = req("POST", "issues", j)
+        return c == 201
+    }
+
     fun tree(): List<String> {
         val (c, t) = req("GET", "git/trees/HEAD?recursive=1")
         if (c != 200) return emptyList()

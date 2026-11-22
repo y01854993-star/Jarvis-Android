@@ -62,6 +62,7 @@ object Keys {
     val localUrl: String get() = (sp.getString("localurl", "") ?: "").ifBlank { "http://127.0.0.1:8080/v1" }
     val wakeOn: Boolean get() = sp.getBoolean("wake", false)
     val wakeLocal: Boolean get() = sp.getBoolean("wakelocal", true)
+    val autoReport: Boolean get() = sp.getBoolean("autoreport", true)
     val perf: String get() = sp.getString("perf", "balanced") ?: "balanced"
     val ttsSpeed: Float get() = sp.getFloat("speed", 1.0f)
     val ttsPitch: Float get() = sp.getFloat("pitch", 1.0f)
@@ -74,6 +75,7 @@ object Keys {
 
     fun studyActive(): Boolean =
         ::sp.isInitialized && sp.getBoolean("study", false) && System.currentTimeMillis() < sp.getLong("studyuntil", 0L)
+    fun studyUntil(): Long = if (::sp.isInitialized) sp.getLong("studyuntil", 0L) else 0L
     fun setStudy(on: Boolean, until: Long) { sp.edit().putBoolean("study", on).putLong("studyuntil", until).apply() }
     fun setTone(t: String) { sp.edit().putString("tone", t).apply() }
 

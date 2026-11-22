@@ -1,0 +1,80 @@
+name: Autofix
+# Opens a pull request with a proposed fix when the Jarvis app reports problems (issue label: jarvis-problem).
+# Only issues created by the repository owner are processed. Nothing is ever merged automatically.
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to analyse
+        required: true
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+concurrency:
+  group: autofix-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: true
+jobs:
+  fix:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'jarvis-problem' && github.event.issue.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load issue (owner only)
+        id: issue
+        run: |
+          N="${{ github.event.issue.number || inputs.issue_number }}"
+          case "$N" in ''|*[!0-9]*) echo "bad issue number"; exit 1;; esac
+          AUTHOR=$(gh issue view "$N" --json author -q .author.login)
+          if [ "$AUTHOR" != "${{ github.repository_owner }}" ]; then echo "issue not created by the owner"; exit 1; fi
+          gh issue view "$N" --json body -q .body > issue.txt
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+      - name: Ask the model for a fix
+        id: fix
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AUTOFIX_MODEL: ${{ vars.AUTOFIX_MODEL }}
+        run: python3 .github/autofix/autofix.py
+      - name: Comment when no code change is proposed
+        if: steps.fix.outputs.edited != 'true'
+        run: gh issue comment "${{ steps.issue.outputs.n }}" --body-file autofix_analysis.md
+      - uses: actions/setup-java@v4
+        if: steps.fix.outputs.edited == 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.fix.outputs.edited == 'true'
+        with:
+          gradle-version: 8.7
+      - name: Build the proposed fix
+        id: build
+        if: steps.fix.outputs.edited == 'true'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: gradle assembleDebug --no-daemon > build.log 2>&1
+      - name: Open pull request (build passed)
+        if: steps.fix.outputs.edited == 'true' && steps.build.outcome == 'success'
+        run: |
+          N="${{ steps.issue.outputs.n }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "autofix/issue-$N"
+          git add app/src
+          git commit -m "Autofix for issue #$N"
+          git push origin "autofix/issue-$N"
+          printf '\n\nFixes #%s\n' "$N" >> autofix_analysis.md
+          gh pr create --base main --head "autofix/issue-$N" --title "Autofix for issue #$N" --body-file autofix_analysis.md \
+            || gh issue comment "$N" --body "Fix pushed to branch autofix/issue-$N (could not open the PR automatically: enable 'Allow GitHub Actions to create pull requests' in repo settings)."
+      - name: Comment when the proposed fix does not build
+        if: steps.fix.outputs.edited == 'true' && steps.build.outcome != 'success'
+        run: |
+          { cat autofix_analysis.md; printf '\n\nThe proposed change did NOT build, so no pull request was opened.\n\n```\n'; tail -n 40 build.log; printf '```\n'; } > comment.md
+          gh issue comment "${{ steps.issue.outputs.n }}" --body-file comment.md
