@@ -630,6 +630,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 else if (q.isNotBlank() && launch(view("https://www.google.com/search?q=" + enc(q)))) null
                 else "معرفتش أدوّر"
             }
+            "deep_link" -> {
+                val u = a.optString("url").trim()
+                val scheme = try { Uri.parse(u).scheme?.lowercase() } catch (_: Exception) { null }
+                val allowed = setOf("https", "http", "tg", "zoommtg", "zoomus", "instagram", "whatsapp", "spotify", "vnd.youtube", "fb", "mailto", "tel", "geo")
+                if (scheme == null || scheme !in allowed) "اللينك ده مش مسموح أو مش مفهوم"
+                else if (launch(view(u))) null else "معرفتش أفتح اللينك ده، يمكن التطبيق مش متسطب"
+            }
             "selftest" -> {
                 val goals = listOf(
                     "Open the Settings app and open the Battery page",
@@ -851,6 +858,7 @@ $extraRules
 - {"type":"search_answer","query":"..."}: لأي سؤال محتاج معلومة حقيقية أو حديثة (أخبار، طقس، أسعار، نتايج، مين/إيه/إمتى) هتجاوب بنفسك من جوجل. استخدمه لما المستخدم عايز إجابة مش عايز يفتح المتصفح
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
 - {"type":"selftest"}: اختبار ذاتي بينفذ كام مهمة تجريبية آمنة على الموبايل (إعدادات، ساعة، حاسبة، يوتيوب، كروم) وبيحفظ اللي نجح كمهارة. استخدمه لما المستخدم يقول درّب نفسك أو جرّب نفسك أو اعمل اختبار
+- {"type":"deep_link","url":"..."}: يفتح لينك مباشرة في التطبيق المناسب وده أسرع وأضمن من التحكم في الشاشة. أمثلة: تليجرام tg://resolve?domain=USERNAME ، زوم zoommtg://zoom.us/join?confno=ID&pwd=PASS ، انستجرام instagram://user?username=NAME ، واتساب https://wa.me/NUMBER . المسموح: https http tg zoommtg zoomus instagram whatsapp spotify vnd.youtube fb mailto tel geo
 - {"type":"create_project","name":"اسم المشروع","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
 قواعد:
@@ -1536,7 +1544,13 @@ Rules:
 - After a tap that loads something, use do="wait" once before judging the result.
 - If the GOAL has several parts (for example "open X and then do Y", or parts joined by "and then" / "و بعدين" / "وبعدها"), do them strictly in order. Use do="done" only after the LAST part is really finished, and mention every part in "summary".
 - A step marked "(screen did not change)" or "(STUCK)" did not work: do NOT repeat it. Try another element, scroll, go back, or a different path.
-- Before open_app, if the CURRENT SCREEN already shows the right app (see "app:" on the first line), skip open_app."""
+- Before open_app, if the CURRENT SCREEN already shows the right app (see "app:" on the first line), skip open_app.
+APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCREEN over these):
+- Telegram: to message a contact use the search (magnifier) at the top, type the name, open the chat, type in the "Message" field, then tap the send arrow (risky=true).
+- Zoom: the bottom bar has Mute and Start/Stop Video; joining a meeting needs the meeting ID (and passcode if asked). Leaving is under "Leave" at the top right (risky=true).
+- Instagram: the paper-plane icon at the top right opens direct messages; the magnifier tab searches accounts. Sending, posting, liking publicly or following is risky=true.
+- Music: to save a song for offline use, open the user's own music app (Anghami, Spotify, YouTube Music), find the song, and use its Download button; this needs the user's subscription. Never use third-party downloader sites or apps, and never rip audio from video sites. If no music app is installed, say so in "summary".
+"""
 
     private suspend fun runAgent(goal: String): AgentResult {
         val trace = ArrayList<String>()
