@@ -67,6 +67,13 @@ body.thinking .spin{animation-duration:calc(var(--d,60s) * .1)}
 @keyframes glowp{50%{opacity:.78}}
 body.listening .glow{filter:hue-rotate(-35deg)}
 body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
+
+.lnk{display:block;width:100%;margin-top:8px;padding:10px;background:transparent;border:1px solid rgba(34,211,238,.35);color:var(--cy);border-radius:10px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer}
+.lnk.danger{border-color:rgba(248,113,113,.6);color:#f87171}
+details.sub{margin-top:10px}
+details.sub>summary{cursor:pointer;color:var(--cy);padding:8px 0;font-family:Orbitron,sans-serif;font-size:12px;letter-spacing:.08em;list-style:none}
+details.sub>summary::-webkit-details-marker{display:none}
+details.sub>summary::after{content:" ▾";opacity:.6}
 </style>
 </head>
 <body>
@@ -150,12 +157,16 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
     <div class="ig"><label>صبر الاستماع (كام ملي ثانية صمت قبل ما أعتبر إنك خلصت)</label><input type="range" id="rPat" min="600" max="2500" step="100" value="1200"></div>
   </details>
   <button id="saveBtn" onclick="saveKeys()">SAVE & CONNECT</button>
-  <button id="healthBtn" type="button" onclick="healthCheck()" style="background:#34d399;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">HEALTH CHECK</button>
-  <button id="studyBtn" type="button" onclick="toggleStudy()" style="background:#fbbf24;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">STUDY MODE ON/OFF</button>
-  <button id="testVoiceBtn" type="button" onclick="testVoice()" style="background:#22d3ee;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">TEST VOICE</button>
-  <button id="unlockBtn" type="button" onclick="unlockFeatures()" style="background:#a78bfa;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">UNLOCK (بصمة / قفل الجهاز)</button>
-  <button id="resetKeys" onclick="resetKeys()" style="background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">RESET ALL KEYS</button>
-  <button id="wipeBtn" type="button" onclick="wipeData()" style="background:#7f1d1d;color:#fff;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron,sans-serif;font-size:12px;cursor:pointer">WIPE ALL DATA (ذاكرة + مفاتيح)</button>
+  <details class="sub"><summary>أدوات</summary>
+    <button id="healthBtn" type="button" class="lnk" onclick="healthCheck()">فحص المفاتيح والاتصال</button>
+    <button id="studyBtn" type="button" class="lnk" onclick="toggleStudy()">وضع المذاكرة (تشغيل / إيقاف)</button>
+    <button id="testVoiceBtn" type="button" class="lnk" onclick="testVoice()">تجربة الصوت</button>
+    <button id="unlockBtn" type="button" class="lnk" onclick="unlockFeatures()">فتح الميزات المقفولة (بصمة / قفل الجهاز)</button>
+  </details>
+  <details class="sub"><summary style="color:#f87171">منطقة الخطر</summary>
+    <button id="resetKeys" class="lnk danger" onclick="resetKeys()">مسح المفاتيح</button>
+    <button id="wipeBtn" type="button" class="lnk danger" onclick="wipeData()">مسح كل البيانات (ذاكرة + مفاتيح)</button>
+  </details>
 </div>
 
 <div class="panel">
@@ -164,10 +175,10 @@ body.speaking .glow{fill:url(#g) !important;filter:hue-rotate(-50deg)}
 <div class="row" id="rAi" style="border:none"><span>AI ENGINE</span><span><b id="vAi">checking</b><i class="dot"></i></span></div>
 </div>
 
-<div class="panel">
-<h2>SYSTEM</h2>
+<details class="panel sub">
+<summary>SYSTEM</summary>
 <div id="sysContainer"></div>
-</div>
+</details>
 </main>
 
 <div class="bottom-bar">
