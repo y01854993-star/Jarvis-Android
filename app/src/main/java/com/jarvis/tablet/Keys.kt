@@ -63,6 +63,10 @@ object Keys {
     val wakeOn: Boolean get() = sp.getBoolean("wake", false)
     val wakeLocal: Boolean get() = sp.getBoolean("wakelocal", true)
     val autoReport: Boolean get() = sp.getBoolean("autoreport", true)
+    /** repo that receives problem reports (and runs the autofix workflow); separate from the memory repo */
+    val fixRepo: String get() = (sp.getString("fixrepo", null) ?: "").takeIf { it.contains("/") } ?: "y01854993-star/Jarvis-Android"
+    fun langOrNull(): String? = if (::sp.isInitialized) sp.getString("lang", null) else null
+    fun setLang(l: String) { if (::sp.isInitialized && (l == "ar-EG" || l == "en-US")) sp.edit().putString("lang", l).apply() }
     val perf: String get() = sp.getString("perf", "balanced") ?: "balanced"
     val ttsSpeed: Float get() = sp.getFloat("speed", 1.0f)
     val ttsPitch: Float get() = sp.getFloat("pitch", 1.0f)

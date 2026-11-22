@@ -31,6 +31,7 @@ class MainActivity : Activity() {
         web.settings.domStorageEnabled = true
         web.addJavascriptInterface(object {
             @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
+            @JavascriptInterface fun setLang(l: String) { Keys.setLang(l) }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun testVoice() { Bus.onTestVoice?.invoke() }

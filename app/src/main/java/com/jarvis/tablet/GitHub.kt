@@ -14,8 +14,8 @@ object GitHub {
     private fun enc(path: String): String =
         path.split("/").joinToString("/") { URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
 
-    private fun req(method: String, path: String, body: JSONObject? = null): Pair<Int, String> {
-        val conn = URL("https://api.github.com/repos/${Keys.ghRepo}/$path").openConnection() as HttpURLConnection
+    private fun req(method: String, path: String, body: JSONObject? = null, repo: String = Keys.ghRepo): Pair<Int, String> {
+        val conn = URL("https://api.github.com/repos/$repo/$path").openConnection() as HttpURLConnection
         try {
             conn.requestMethod = method
             conn.connectTimeout = 15000
@@ -61,7 +61,7 @@ object GitHub {
 
     fun createIssue(title: String, body: String, labels: List<String>): Boolean {
         val j = JSONObject().put("title", title.take(200)).put("body", body.take(60000)).put("labels", JSONArray(labels))
-        val (c, _) = req("POST", "issues", j)
+        val (c, _) = req("POST", "issues", j, Keys.fixRepo)
         return c == 201
     }
 

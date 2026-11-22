@@ -794,7 +794,13 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
     } catch (_: Exception) { -1 }
 
-    private fun systemPrompt(audioMode: Boolean, userText: String = ""): String {
+    private fun langDirective(): String = if (Config.sttLang().startsWith("en"))
+        "LANGUAGE: The user selected English. Speak and reply ONLY in English, short and natural, and write any summary in English. The assistant's name is Jarvis."
+    else "اللغة: المستخدم اختار العربي. رد بالعربي المصري العامي وأي ملخص يكون بالعربي. اسمك جارفيس (Jarvis)."
+
+    private fun systemPrompt(audioMode: Boolean, userText: String = ""): String = langDirective() + "\n" + systemPromptBase(audioMode, userText)
+
+    private fun systemPromptBase(audioMode: Boolean, userText: String): String {
         val names = contactNames()
         val apps = installedApps().map { it.first }.take(200).joinToString("، ")
         val now = SimpleDateFormat("EEEE d MMMM yyyy، h:mm a", Locale("ar")).format(Date())
@@ -1550,7 +1556,7 @@ $extraRules
     } catch (e: Exception) { "معرفتش ابعت الرسالة" }
 
     // ------------------------------------------------------------ phone agent (reads the screen, taps, types, scrolls)
-    private fun agentSystem(): String = """You are the hands of a voice assistant called Jarvis. You control an Android phone through the accessibility API and complete the user's GOAL step by step.
+    private fun agentSystem(): String = langDirective() + "\n" + """You are the hands of a voice assistant called Jarvis. You control an Android phone through the accessibility API and complete the user's GOAL step by step.
 Each turn you get: the GOAL, the user's language, STEPS SO FAR, and the CURRENT SCREEN as a numbered list of UI elements: [index] Class "label" #id (flags).
 Reply with ONE JSON object only:
 {"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail|tap_xy|double_tap|drag|paste|enter|screenshot|lock|power|wait_for|pinch_in|pinch_out","index":0,"x":0,"y":0,"x2":0,"y2":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":"","result":""}
@@ -1980,7 +1986,9 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
     }
 
     /** short prompt: a 1.5B model on a phone has a small context window */
-    private fun systemPromptLite(userText: String): String {
+    private fun systemPromptLite(userText: String): String = langDirective() + "\n" + systemPromptLiteBase(userText)
+
+    private fun systemPromptLiteBase(userText: String): String {
         val now = SimpleDateFormat("EEEE d MMMM h:mm a", Locale("ar")).format(Date())
         val facts = Brain.profile(6).joinToString("، ") { it.substringAfter("] ") }
         val rel = Brain.relevant(userText, 3).joinToString(" | ")
