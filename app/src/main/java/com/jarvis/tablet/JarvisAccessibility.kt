@@ -290,6 +290,48 @@ class JarvisAccessibility : AccessibilityService() {
         return ok
     }
 
+    // ---- coordinate gestures: x/y are normalized 0..1000 over the screen (x right, y down)
+    private fun pxOf(v: Int, total: Int): Float = (v.coerceIn(0, 1000) / 1000f) * total
+
+    fun tapNorm(x: Int, y: Int): Boolean {
+        val dm = resources.displayMetrics
+        return tapAt(pxOf(x, dm.widthPixels), pxOf(y, dm.heightPixels))
+    }
+
+    fun doubleTapNorm(x: Int, y: Int): Boolean {
+        val dm = resources.displayMetrics
+        val fx = pxOf(x, dm.widthPixels)
+        val fy = pxOf(y, dm.heightPixels)
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(fx, fy) }, 0, 50))
+            .addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(fx, fy) }, 130, 50))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
+    fun dragNorm(x1: Int, y1: Int, x2: Int, y2: Int, ms: Long = 450): Boolean {
+        val dm = resources.displayMetrics
+        val p = Path().apply {
+            moveTo(pxOf(x1, dm.widthPixels), pxOf(y1, dm.heightPixels))
+            lineTo(pxOf(x2, dm.widthPixels), pxOf(y2, dm.heightPixels))
+        }
+        return dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, ms)).build(), null, null
+        )
+    }
+
+    fun pasteInto(n: AccessibilityNodeInfo?): Boolean {
+        val target = n ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        return target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }
+
+    fun imeEnter(): Boolean {
+        if (Build.VERSION.SDK_INT < 30) return false
+        val t = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        return t.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+    }
+
     fun global(name: String): Boolean = when (name) {
         "home" -> performGlobalAction(GLOBAL_ACTION_HOME)
         "back" -> performGlobalAction(GLOBAL_ACTION_BACK)

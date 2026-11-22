@@ -1494,9 +1494,11 @@ $extraRules
     private fun agentSystem(): String = """You are the hands of a voice assistant called Jarvis. You control an Android phone through the accessibility API and complete the user's GOAL step by step.
 Each turn you get: the GOAL, the user's language, STEPS SO FAR, and the CURRENT SCREEN as a numbered list of UI elements: [index] Class "label" #id (flags).
 Reply with ONE JSON object only:
-{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail","index":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":"","result":""}
+{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail|tap_xy|double_tap|drag|paste|enter|screenshot|lock|power","index":0,"x":0,"y":0,"x2":0,"y2":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":"","result":""}
 Rules:
 - click, long_click and type use "index" from CURRENT SCREEN. type puts "text" into that editable element; enter=true presses search/enter afterwards.
+- tap_xy / double_tap / drag are for things with no usable index or label (video thumbnails, icons, canvas, games, maps). x,y (and x2,y2 for drag, the end point) are normalized 0..1000 over the screenshot: x=0 left, x=1000 right, y=0 top, y=1000 bottom. Only use them when the screenshot is attached and you can see the target.
+- paste puts the clipboard into the focused field; enter presses the keyboard Enter/Search key; screenshot saves a screenshot; lock locks the phone (use only if asked); power opens the power menu (use only if asked).
 - scroll: "direction" is the finger swipe direction ("up" reveals content further down the page).
 - open_app: "app" is the app name. Use it first when the goal is inside an app.
 - To change a setting (wifi, bluetooth, brightness, ...) use quick_settings then tap the tile, or open_app "Settings".
@@ -1602,7 +1604,13 @@ Rules:
                 "long_click" -> node?.let { a.longClickNode(it) } ?: false
                 "type" -> a.typeInto(node, text, res.optBoolean("enter"))
                 "scroll" -> a.swipe(res.optString("direction", "up"))
-                "back", "home", "recents", "notifications", "quick_settings" -> a.global(act)
+                "back", "home", "recents", "notifications", "quick_settings", "screenshot", "lock", "power" -> a.global(act)
+                "tap_xy" -> res.has("x") && res.has("y") && a.tapNorm(res.optInt("x"), res.optInt("y"))
+                "double_tap" -> res.has("x") && res.has("y") && a.doubleTapNorm(res.optInt("x"), res.optInt("y"))
+                "drag" -> res.has("x") && res.has("y") && res.has("x2") && res.has("y2") &&
+                    a.dragNorm(res.optInt("x"), res.optInt("y"), res.optInt("x2"), res.optInt("y2"))
+                "paste" -> a.pasteInto(node)
+                "enter" -> a.imeEnter()
                 "open_app" -> doOpenApp(res.optString("app"))
                 "wait" -> true
                 else -> false
@@ -1612,7 +1620,7 @@ Rules:
             lastFailed = !ok
             prevSig = sig
             prevSigValid = true
-            prevWasUiAction = ok && act in listOf("click", "long_click", "type")
+            prevWasUiAction = ok && act in listOf("click", "long_click", "type", "tap_xy", "double_tap", "drag", "paste", "enter")
             delay(if (act == "open_app") 1800 else 1100)
         }
         return AgentResult(false, "مخلصتش المهمة في الخطوات المسموحة")
