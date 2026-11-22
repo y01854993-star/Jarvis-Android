@@ -326,6 +326,24 @@ class JarvisAccessibility : AccessibilityService() {
         return target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
     }
 
+    /** two-finger zoom around the screen centre (maps, photos, web pages) */
+    fun pinch(zoomIn: Boolean, ms: Long = 420): Boolean {
+        val dm = resources.displayMetrics
+        val cx = dm.widthPixels / 2f
+        val cy = dm.heightPixels / 2f
+        val near = dm.widthPixels * 0.08f
+        val far = dm.widthPixels * 0.30f
+        val from = if (zoomIn) near else far
+        val to = if (zoomIn) far else near
+        val p1 = Path().apply { moveTo(cx - from, cy); lineTo(cx - to, cy) }
+        val p2 = Path().apply { moveTo(cx + from, cy); lineTo(cx + to, cy) }
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p1, 0, ms))
+            .addStroke(GestureDescription.StrokeDescription(p2, 0, ms))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
     fun imeEnter(): Boolean {
         if (Build.VERSION.SDK_INT < 30) return false
         val t = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false

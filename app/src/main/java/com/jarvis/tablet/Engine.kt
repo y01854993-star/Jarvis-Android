@@ -1553,7 +1553,7 @@ $extraRules
     private fun agentSystem(): String = """You are the hands of a voice assistant called Jarvis. You control an Android phone through the accessibility API and complete the user's GOAL step by step.
 Each turn you get: the GOAL, the user's language, STEPS SO FAR, and the CURRENT SCREEN as a numbered list of UI elements: [index] Class "label" #id (flags).
 Reply with ONE JSON object only:
-{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail|tap_xy|double_tap|drag|paste|enter|screenshot|lock|power","index":0,"x":0,"y":0,"x2":0,"y2":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":"","result":""}
+{"thought":"short reasoning","do":"click|long_click|type|scroll|back|home|recents|notifications|quick_settings|open_app|wait|done|fail|tap_xy|double_tap|drag|paste|enter|screenshot|lock|power|wait_for|pinch_in|pinch_out","index":0,"x":0,"y":0,"x2":0,"y2":0,"text":"","enter":false,"direction":"up","app":"","risky":false,"summary":"","result":""}
 Rules:
 - click, long_click and type use "index" from CURRENT SCREEN. type puts "text" into that editable element; enter=true presses search/enter afterwards.
 - tap_xy / double_tap / drag are for things with no usable index or label (video thumbnails, icons, canvas, games, maps). x,y (and x2,y2 for drag, the end point) are normalized 0..1000 over the screenshot: x=0 left, x=1000 right, y=0 top, y=1000 bottom. Only use them when the screenshot is attached and you can see the target.
@@ -1573,6 +1573,12 @@ Rules:
 - If the GOAL has several parts (for example "open X and then do Y", or parts joined by "and then" / "و بعدين" / "وبعدها"), do them strictly in order. Use do="done" only after the LAST part is really finished, and mention every part in "summary".
 - A step marked "(screen did not change)" or "(STUCK)" did not work: do NOT repeat it. Try another element, scroll, go back, or a different path.
 - Before open_app, if the CURRENT SCREEN already shows the right app (see "app:" on the first line), skip open_app.
+- If the target is ambiguous (several contacts, chats or apps with the same or a similar name), do NOT guess: use do="fail" and put ONE short question in "summary" asking which one (the user will answer and repeat the order).
+- If an app opens on a first-run, welcome, rating or permission screen, dismiss it first (Skip, Not now, Later, Close). Allow a permission only if the GOAL needs it. Then continue.
+- A small floating Jarvis bubble may appear in screenshots. Ignore it, it is not part of the app you are operating.
+- Use do="wait_for" with "text" (and optional "seconds", max 20) when a page, video or result is still loading, instead of repeating do="wait".
+- pinch_out zooms in and pinch_in zooms out around the centre of the screen (maps, photos, web pages).
+- You have at most 30 steps in total: prefer fewer, better actions.
 APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCREEN over these):
 - Telegram: to message a contact use the search (magnifier) at the top, type the name, open the chat, type in the "Message" field, then tap the send arrow (risky=true).
 - Zoom: the bottom bar has Mute and Start/Stop Video; joining a meeting needs the meeting ID (and passcode if asked). Leaving is under "Leave" at the top right (risky=true).
@@ -1676,6 +1682,21 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
                     a.dragNorm(res.optInt("x"), res.optInt("y"), res.optInt("x2"), res.optInt("y2"))
                 "paste" -> a.pasteInto(node)
                 "enter" -> a.imeEnter()
+                "pinch_in" -> a.pinch(false)
+                "pinch_out" -> a.pinch(true)
+                "wait_for" -> {
+                    val want = text.trim()
+                    val secs = res.optInt("seconds", 8).coerceIn(1, 20)
+                    var seen = false
+                    if (want.isNotEmpty()) {
+                        var tries = 0
+                        while (!seen && tries < secs * 2) {
+                            if (a.dumpScreen().first.contains(want, ignoreCase = true)) seen = true else delay(500)
+                            tries++
+                        }
+                    }
+                    seen
+                }
                 "open_app" -> doOpenApp(res.optString("app"))
                 "wait" -> true
                 else -> false
@@ -1691,7 +1712,7 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
             lastFailed = !ok
             prevSig = sig
             prevSigValid = true
-            prevWasUiAction = ok && act in listOf("click", "long_click", "type", "tap_xy", "double_tap", "drag", "paste", "enter")
+            prevWasUiAction = ok && act in listOf("click", "long_click", "type", "tap_xy", "double_tap", "drag", "paste", "enter", "pinch_in", "pinch_out")
             delay(if (act == "open_app") 1800 else 1100)
         }
         return AgentResult(false, "مخلصتش المهمة في الخطوات المسموحة")
