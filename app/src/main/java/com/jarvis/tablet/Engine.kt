@@ -397,7 +397,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** returns an error sentence, or null when OK */
     private suspend fun runAction(a: JSONObject): String? {
-        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "autoreply_set", "study_mode", "voice_message", "sms", "call",
+        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "autoreply_set", "study_mode", "voice_message", "sms", "call",
                 "whatsapp", "whatsapp_group", "handoff", "github_save", "run_macro", "teach_start", "close_app", "youtube_play_channel")) {
             return "الميزة دي مقفولة. افتح التطبيق وادوس UNLOCK"
         }
@@ -630,6 +630,28 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 else if (q.isNotBlank() && launch(view("https://www.google.com/search?q=" + enc(q)))) null
                 else "معرفتش أدوّر"
             }
+            "selftest" -> {
+                val goals = listOf(
+                    "Open the Settings app and open the Battery page",
+                    "Open the Clock app",
+                    "Open the Calculator app and calculate 12 times 8",
+                    "Open YouTube and search for Quran recitation, then stop on the results without playing anything",
+                    "Open Chrome and search for today's weather"
+                )
+                var passed = 0
+                var failedCount = 0
+                for (g in goals) {
+                    if (voiceMode && !sessionActive) break
+                    val r = runAgent(g)
+                    if (r.ok) passed++ else { failedCount++; Problems.add("selftest failed: $g -> ${r.summary}") }
+                    JarvisAccessibility.instance?.global("home")
+                    delay(1200)
+                }
+                agentSummary = "خلصت الاختبار الذاتي: نجح $passed من ${goals.size}" +
+                    (if (failedCount > 0) "، وفشل $failedCount وسجّلت السبب في سجل المشاكل" else "") +
+                    ". وكل اللي نجح اتحفظ كمهارة."
+                null
+            }
             "agent" -> {
                 val r = runAgent(a.optString("goal"))
                 agentSummary = r.summary
@@ -828,6 +850,7 @@ $extraRules
 - {"type":"look","question":"..."}: لما المستخدم يسأل عن اللي على شاشته أو عايزك تشوف الشاشة وتشرحها أو تقراها أو تحللها (بتاخد سكرين شوت وتبص عليه)
 - {"type":"search_answer","query":"..."}: لأي سؤال محتاج معلومة حقيقية أو حديثة (أخبار، طقس، أسعار، نتايج، مين/إيه/إمتى) هتجاوب بنفسك من جوجل. استخدمه لما المستخدم عايز إجابة مش عايز يفتح المتصفح
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
+- {"type":"selftest"}: اختبار ذاتي بينفذ كام مهمة تجريبية آمنة على الموبايل (إعدادات، ساعة، حاسبة، يوتيوب، كروم) وبيحفظ اللي نجح كمهارة. استخدمه لما المستخدم يقول درّب نفسك أو جرّب نفسك أو اعمل اختبار
 - {"type":"create_project","name":"اسم المشروع","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
 قواعد:
@@ -1616,7 +1639,13 @@ Rules:
                 else -> false
             }
             steps.add("$i. $act ${if (idx >= 0) idx else ""} ${text.take(40)} -> ${if (ok) "ok" else "FAILED"}")
-            if (ok && act != "wait") trace.add(traceStep(act, node, res.optString("app"), res.optString("direction", "up")))
+            if (ok && act != "wait") trace.add(
+                when (act) {
+                    "tap_xy", "double_tap" -> "$act ${res.optInt("x")},${res.optInt("y")}"
+                    "drag" -> "drag ${res.optInt("x")},${res.optInt("y")}->${res.optInt("x2")},${res.optInt("y2")}"
+                    else -> traceStep(act, node, res.optString("app"), res.optString("direction", "up"))
+                }
+            )
             lastFailed = !ok
             prevSig = sig
             prevSigValid = true
