@@ -175,7 +175,7 @@ details.sub>summary::after{content:" ▾";opacity:.6}
 <div class="row" id="rAi" style="border:none"><span>AI ENGINE</span><span><b id="vAi">checking</b><i class="dot"></i></span></div>
 </div>
 
-<details class="panel sub">
+<details class="panel sub" open>
 <summary>SYSTEM</summary>
 <div id="sysContainer"></div>
 </details>
@@ -198,17 +198,25 @@ let listening=false,busy=false,voices=[], currentLang="ar-EG";
   for(let i=0;i<120;i++){const a=i*Math.PI/60,co=Math.cos(a),s=Math.sin(a);mk($("t1"),200+192*co,200+192*s,200+(i%5?196:200)*co,200+(i%5?196:200)*s)}
   for(let i=0;i<72;i++){const a=i*Math.PI/36,co=Math.cos(a),s=Math.sin(a);mk($("t2"),200+112*co,200+112*s,200+(i%2?118:124)*co,200+(i%2?118:124)*s)}
   ["fps","mem","net","bat"].forEach(id=>$("sysContainer").innerHTML+=`<div class="m"><span>${id.toUpperCase()}</span><span id="v_${id}">--</span></div><div class="bar"><i id="b_${id}"></i></div>`);
+  $("sysContainer").innerHTML+=`<div class="m"><span>CPU CORES</span><span id="v_cpu">--</span></div><div class="m" style="opacity:.75;font-size:12px;margin-top:8px"><span>FRAME RATE · LAST 60 S</span></div><svg viewBox="0 0 300 40" preserveAspectRatio="none" style="width:100%;height:44px;display:block"><polyline id="fpsLine" fill="none" stroke="#22d3ee" stroke-width="1.5" points=""/></svg>`;
+  $("v_cpu").textContent=navigator.hardwareConcurrency||"--";
 })();
 
 // 2. Clock & Stats Loop
 setInterval(()=>{$("clock").textContent=new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true})},1000);
 let frames=0; requestAnimationFrame(function loop(){frames++;requestAnimationFrame(loop)});
+const fpsHist=[];
+function drawFps(){
+  const l=$("fpsLine"); if(!l||!fpsHist.length)return;
+  const mx=Math.max(60,...fpsHist), step=fpsHist.length>1?300/59:0, off=300-(fpsHist.length-1)*step;
+  l.setAttribute("points",fpsHist.map((v,i)=>(off+i*step).toFixed(1)+","+(39-v/mx*37).toFixed(1)).join(" "));
+}
 setInterval(()=>{
-  $("v_fps").textContent=frames+" fps"; $("b_fps").style.width=Math.min(100,frames/1.2)+"%"; frames=0;
+  $("v_fps").textContent=frames+" fps"; $("b_fps").style.width=Math.min(100,frames/1.2)+"%"; fpsHist.push(frames); if(fpsHist.length>60)fpsHist.shift(); drawFps(); frames=0;
   if(performance.memory){$("v_mem").textContent=Math.round(performance.memory.usedJSHeapSize/1048576)+" MB";$("b_mem").style.width=(performance.memory.usedJSHeapSize/performance.memory.jsHeapSizeLimit*100)+"%"}
-  if(navigator.connection){$("v_net").textContent=navigator.connection.downlink+" Mbps";$("b_net").style.width=Math.min(100,navigator.connection.downlink*2)+"%"}
+  if(navigator.connection){$("v_net").textContent=navigator.connection.downlink+" Mbps "+(navigator.connection.effectiveType||"");$("b_net").style.width=Math.min(100,navigator.connection.downlink*2)+"%"}
 },1000);
-if(navigator.getBattery)navigator.getBattery().then(b=>{const u=()=>{$("v_bat").textContent=Math.round(b.level*100)+"%";$("b_bat").style.width=(b.level*100)+"%";};u();b.onlevelchange=u});
+if(navigator.getBattery)navigator.getBattery().then(b=>{const u=()=>{$("v_bat").textContent=Math.round(b.level*100)+"%"+(b.charging?" charging":"");$("b_bat").style.width=(b.level*100)+"%";};u();b.onlevelchange=u;b.onchargingchange=u});
 
 const I18N_EN={"اسمك": "Your name", "Gemini API Key — المفتاح الأساسي (مجاني). لوحده بيشغّل: فهم الصوت + العقل + الصوت + الشاشة + الكاميرا": "Gemini API Key — main key (free). On its own it powers: speech recognition + brain + voice + screen + camera", "من: aistudio.google.com/apikey": "Get it at: aistudio.google.com/apikey", "إعدادات متقدمة (اختيارية)": "Advanced settings (optional)", "Groq Key (مجاني) — بديل سريع لفهم الصوت والعقل": "Groq Key (free) — fast alternative for speech and brain", "OpenAI Key (مدفوع) — اختياري": "OpenAI Key (paid) — optional", "Local Server URL (llama.cpp - بدون إنترنت)": "Local Server URL (llama.cpp, offline)", "استخدم المحرك المحلي (Local LLM)": "Use the local engine (Local LLM)", "محلي فقط (من غير إنترنت ولا سحابة)": "Local only (no internet, no cloud)", "التعرف على الصوت من الجهاز (SpeechRecognizer)": "On-device speech recognition (SpeechRecognizer)", "Fish Audio Key (صوت Jarvis MCU)": "Fish Audio Key (Jarvis MCU voice)", "Fish Voice ID (الصق رابط الصوت كامل أو الـ ID)": "Fish Voice ID (paste the full voice link or the ID)", "DeepSeek Key (اختياري)": "DeepSeek Key (optional)", "Kimi (Moonshot) Key (اختياري)": "Kimi (Moonshot) Key (optional)", "GitHub Token (لحفظ الذاكرة والمشاريع)": "GitHub Token (to save memory and projects)", "وضع الأداء والبطارية": "Performance and battery mode", "متوازن (الافتراضي)": "Balanced (default)", "أداء عالي (استماع حتى والشاشة مقفولة)": "High performance (listens even with the screen off)", "توفير طاقة (من غير استماع تلقائي ولا لقطات شاشة)": "Battery saver (no automatic listening, no screenshots)", "الاستيقاظ بالاسم (\"يا جارفيس\" / \"Yeah Boss\") - بيستخدم فهم الصوت على الجمل القصيرة بس": "Wake by name (\"Hey Jarvis\" / \"Yeah Boss\") - uses speech recognition on short phrases only", "اقفل الميزات الحساسة (رد تلقائي، تحكم، مكالمات، رسايل) ببصمة/قفل الجهاز": "Lock sensitive features (auto-reply, control, calls, messages) with fingerprint / device lock", "سرعة الكلام": "Speech speed", "درجة الصوت": "Voice pitch", "صبر الاستماع (كام ملي ثانية صمت قبل ما أعتبر إنك خلصت)": "Listening patience (ms of silence before I consider you finished)", "أدوات": "Tools", "فحص المفاتيح والاتصال": "Check keys and connection", "وضع المذاكرة (تشغيل / إيقاف)": "Study mode (on / off)", "تجربة الصوت": "Test voice", "فتح الميزات المقفولة (بصمة / قفل الجهاز)": "Unlock locked features (fingerprint / device lock)", "منطقة الخطر": "Danger zone", "مسح المفاتيح": "Clear keys", "مسح كل البيانات (ذاكرة + مفاتيح)": "Wipe all data (memory + keys)"};
 const I18N_ORIG=new WeakMap();
