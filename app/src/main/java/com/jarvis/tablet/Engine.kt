@@ -170,7 +170,27 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             delay(90_000)
             while (isActive) {
                 try { reportProblems() } catch (_: Exception) {}
+                try { checkFixes() } catch (_: Exception) {}
                 delay(6L * 3600 * 1000)
+            }
+        }
+        scope.launch(Dispatchers.IO) {
+            var downSince = 0L
+            var alerted = false
+            delay(120_000)
+            while (isActive) {
+                try {
+                    val down = a11yEnabledInSettings() && JarvisAccessibility.instance == null
+                    val now = System.currentTimeMillis()
+                    if (down) {
+                        if (downSince == 0L) downSince = now
+                        if (!alerted && now - downSince > 3 * 60_000L) {
+                            alerted = true
+                            postAlert("⚠️ خدمة الوصول وقفت", a11yHelp())
+                        }
+                    } else { downSince = 0L; alerted = false }
+                } catch (_: Exception) {}
+                delay(60_000)
             }
         }
         pushStatus()
@@ -417,7 +437,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** returns an error sentence, or null when OK */
     private suspend fun runAction(a: JSONObject): String? {
-        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "autoreply_set", "study_mode", "voice_message", "sms", "call",
+        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "fixes_apply", "autoreply_set", "study_mode", "voice_message", "sms", "call",
                 "whatsapp", "whatsapp_group", "handoff", "github_save", "run_macro", "teach_start", "close_app", "youtube_play_channel")) {
             return "الميزة دي مقفولة. افتح التطبيق وادوس UNLOCK"
         }
@@ -495,7 +515,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val pkg = installedApps().firstOrNull { it.first.equals(name, true) || it.first.contains(name, true) || name.contains(it.first, true) }?.second
                 val a11y = JarvisAccessibility.instance
                 if (pkg == null) "مش لاقي التطبيق ده"
-                else if (a11y == null) "فعّل خدمة Jarvis من إمكانية الوصول"
+                else if (a11y == null) a11yHelp()
                 else {
                     launch(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
                     delay(1500)
@@ -586,10 +606,27 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 if (u != null && launch(Intent(Intent.ACTION_VIEW).setDataAndType(u, "text/plain").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))) null
                 else "معرفتش أفتح الملف، هو في Documents/JARVIS/problems.md"
             }
+            "diagnose" -> { agentSummary = diagnose(); null }
+            "fixes_list" -> {
+                val list = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.openFixPrs() }
+                agentSummary = if (list.isEmpty()) "مفيش إصلاحات مقترحة دلوقتي"
+                else "عندي ${list.size} إصلاح مقترح: " + list.joinToString("، ") { "رقم ${it.first}: ${it.second.take(60)}" }
+                null
+            }
+            "fixes_apply" -> {
+                val num = a.optInt("number", -1)
+                if (num < 0) "قولي رقم الإصلاح"
+                else if (!confirmAction("Merge fix number $num into the main code. The app will rebuild. Go ahead, Boss?")) "تمام، الغيتها"
+                else {
+                    val (ok, msg) = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.mergeFixPr(num) }
+                    agentSummary = if (ok) "دمجت الإصلاح رقم $num، والنسخة الجديدة هتتبني في دقايق" else msg
+                    null
+                }
+            }
             "problems_read" -> { agentSummary = Problems.summary(); null }
             "teach_start" -> {
                 val a11y = JarvisAccessibility.instance
-                if (a11y == null) "فعّل خدمة Jarvis من إمكانية الوصول" else {
+                if (a11y == null) a11yHelp() else {
                     recordingName = a.optString("name")
                     a11y.startRecording()
                     null
@@ -725,7 +762,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             }
             "system" -> {
                 val ok = JarvisAccessibility.instance?.global(a.optString("name")) ?: false
-                if (ok) null else "فعّل خدمة Jarvis من إمكانية الوصول"
+                if (ok) null else a11yHelp()
             }
             "settings" -> {
                 val act = when (a.optString("page")) {
@@ -893,6 +930,9 @@ $extraRules
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
 - {"type":"selftest"}: اختبار ذاتي بينفذ كام مهمة تجريبية آمنة على الموبايل (إعدادات، ساعة، حاسبة، يوتيوب، كروم) وبيحفظ اللي نجح كمهارة. استخدمه لما المستخدم يقول درّب نفسك أو جرّب نفسك أو اعمل اختبار
 - {"type":"deep_link","url":"..."}: يفتح لينك مباشرة في التطبيق المناسب وده أسرع وأضمن من التحكم في الشاشة. أمثلة: تليجرام tg://resolve?domain=USERNAME ، زوم zoommtg://zoom.us/join?confno=ID&pwd=PASS ، انستجرام instagram://user?username=NAME ، واتساب https://wa.me/NUMBER . المسموح: https http tg zoommtg zoomus instagram whatsapp spotify vnd.youtube fb mailto tel geo
+- {"type":"diagnose"}: يفحص الصلاحيات والخدمات والمفاتيح والإنترنت ويقولك إيه الناقص، ويسجل المشاكل في ملف المشاكل. استخدمه لما المستخدم يقول شوف المشاكل أو إيه اللي مش شغال
+- {"type":"fixes_list"}: يقرأ الإصلاحات اللي بوت المشاكل اقترحها (Pull Requests)
+- {"type":"fixes_apply","number":N}: يدمج إصلاح مقترح بعد تأكيد صوتي. لا تستخدمه إلا لو المستخدم طلب صراحة وقال رقم الإصلاح
 - {"type":"create_project","name":"اسم المشروع","project_prompt":"..."}: لما يطلب مشروع أو موقع أو تطبيق، project_prompt وصف مفصل بالإنجليزي
 
 قواعد:
@@ -1407,7 +1447,7 @@ $extraRules
             ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             true
         } catch (e: Exception) {
-            Bus.say("err", "فعّل خدمة Jarvis من إمكانية الوصول")
+            Bus.say("err", a11yHelp())
             false
         }
     }
@@ -1502,7 +1542,7 @@ $extraRules
 
     /** Searches the WhatsApp chat list (groups included) via accessibility, then types and sends. Returns an error sentence or null. */
     private suspend fun doWhatsappGroup(group: String, alt: String, message: String?): String? {
-        val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول عشان أدور في الجروبات"
+        val a = JarvisAccessibility.instance ?: return a11yHelp() + " (عشان أدور في الجروبات)"
         val pm = ctx.packageManager
         val pkg = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pm.getLaunchIntentForPackage(it) != null }
             ?: return "الواتساب مش متثبت"
@@ -1613,7 +1653,7 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
 
     private suspend fun runAgentCore(goal: String, trace: MutableList<String>, hints: String): AgentResult {
         val a = JarvisAccessibility.instance
-            ?: return AgentResult(false, "فعّل خدمة Jarvis من إمكانية الوصول عشان أقدر أتحكم في الموبايل")
+            ?: return AgentResult(false, a11yHelp())
         if (goal.isBlank()) return AgentResult(false, "مفهمتش المطلوب")
         if (!Keys.hasCloud() || !isOnline()) return AgentResult(false, "التحكم في الشاشة محتاج إنترنت ومفتاح سحابي (Gemini مثلا). المحرك المحلي لوحده مش بيشوف الشاشة")
         val steps = ArrayList<String>()
@@ -2195,6 +2235,55 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
     }
 
     // ------------------------------------------------------------ WhatsApp smart auto-reply
+    private var lastA11yLog = 0L
+
+    private fun a11yEnabledInSettings(): Boolean {
+        val s = try { Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) } catch (_: Exception) { null } ?: return false
+        return s.contains(ctx.packageName, ignoreCase = true)
+    }
+
+    /** one honest message when the accessibility service is unavailable: "off" is not the same as "on but stopped by the system"; the facts go to the problems log */
+    private fun a11yHelp(): String {
+        val enabled = a11yEnabledInSettings()
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val batteryFree = try { pm.isIgnoringBatteryOptimizations(ctx.packageName) } catch (_: Exception) { false }
+        val now = System.currentTimeMillis()
+        if (now - lastA11yLog > 10 * 60_000L) {
+            lastA11yLog = now
+            Problems.add("accessibility unavailable: enabledInSettings=$enabled, ignoringBatteryOptimizations=$batteryFree, sdk=${Build.VERSION.SDK_INT}, device=${Build.MANUFACTURER} ${Build.MODEL}, lastConnected=${JarvisAccessibility.lastConnectedAt}, lastDisconnected=${JarvisAccessibility.lastDisconnectedAt}")
+        }
+        return if (!enabled) "فعّل خدمة Jarvis من إمكانية الوصول"
+        else "الخدمة متفعّلة بس أندرويد وقفها دلوقتي. اقفلها وشغّلها تاني من إعدادات إمكانية الوصول" +
+            (if (!batteryFree) "، وشيل قيود البطارية عن Jarvis عشان ما تتوقفش تاني" else "")
+    }
+
+    /** checks permissions, services, keys and internet; every finding is also written to the problems log */
+    private fun diagnose(): String {
+        val issues = ArrayList<String>()
+        if (JarvisAccessibility.instance == null) issues.add(if (a11yEnabledInSettings()) "خدمة الوصول متفعّلة بس واقفة" else "خدمة الوصول مش متفعّلة")
+        val nl = try { Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners") } catch (_: Exception) { null } ?: ""
+        if (!nl.contains(ctx.packageName)) issues.add("الوصول للإشعارات مش متفعّل")
+        if (!Settings.canDrawOverlays(ctx)) issues.add("الظهور فوق التطبيقات مش متفعّل")
+        if (ctx.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) issues.add("إذن الميكروفون ناقص")
+        if (ctx.checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) issues.add("إذن الكاميرا ناقص")
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!(try { pm.isIgnoringBatteryOptimizations(ctx.packageName) } catch (_: Exception) { false })) issues.add("قيود البطارية شغالة على Jarvis وممكن توقف الخدمات")
+        if (!isOnline()) issues.add("مفيش إنترنت")
+        if (!Keys.hasLlm()) issues.add("مفيش مفتاح ذكاء اصطناعي")
+        issues.forEach { Problems.add("diagnose: $it") }
+        return if (issues.isEmpty()) "كل حاجة سليمة" else "لقيت ${issues.size} مشكلة: " + issues.joinToString("، ")
+    }
+
+    private fun checkFixes() {
+        if (!Keys.autoReport || !GitHub.configured()) return
+        val list = GitHub.openFixPrs()
+        val maxN = list.maxOfOrNull { it.first } ?: 0
+        if (maxN > reportSp.getInt("lastpr", 0)) {
+            reportSp.edit().putInt("lastpr", maxN).apply()
+            postAlert("🛠 إصلاح مقترح جاهز", "عندي ${list.size} إصلاح مقترح. قول: جارفيس ادمج الإصلاح رقم $maxN")
+        }
+    }
+
     private fun postAlert(title: String, text: String) {
         try {
             val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -2552,7 +2641,7 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
 
     /** replays a recorded routine by element labels (not coordinates); falls back to the screen agent if a step fails */
     private suspend fun runMacro(m: JSONObject): String? {
-        val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول"
+        val a = JarvisAccessibility.instance ?: return a11yHelp()
         val steps = m.getJSONArray("steps")
         var lastPkg = ""
         for (i in 0 until steps.length()) {
@@ -2593,7 +2682,7 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
 
     /** reads the screen the user is standing on and remembers it under a spoken name (e.g. a WhatsApp group) */
     private suspend fun learnScreen(alias: String): String? {
-        val a = JarvisAccessibility.instance ?: return "فعّل خدمة Jarvis من إمكانية الوصول"
+        val a = JarvisAccessibility.instance ?: return a11yHelp()
         if (alias.isBlank()) return "اسمه إيه؟"
         val (screen, _) = a.dumpScreen(80)
         val pkg = Regex("app: (\\S+)").find(screen)?.groupValues?.get(1) ?: ""

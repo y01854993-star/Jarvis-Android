@@ -21,6 +21,8 @@ class JarvisAccessibility : AccessibilityService() {
 
     companion object {
         @Volatile var instance: JarvisAccessibility? = null
+        @Volatile var lastConnectedAt = 0L
+        @Volatile var lastDisconnectedAt = 0L
     }
 
     @Volatile private var waPendingUntil = 0L
@@ -30,6 +32,7 @@ class JarvisAccessibility : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        lastConnectedAt = System.currentTimeMillis()
         Config.load(this)
         Keys.init(this)
         Bus.log("Accessibility service ready")
@@ -37,7 +40,14 @@ class JarvisAccessibility : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
+        lastDisconnectedAt = System.currentTimeMillis()
         return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        instance = null
+        lastDisconnectedAt = System.currentTimeMillis()
+        super.onDestroy()
     }
 
     override fun onInterrupt() {}

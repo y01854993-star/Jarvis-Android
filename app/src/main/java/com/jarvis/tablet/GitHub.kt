@@ -59,6 +59,30 @@ object GitHub {
         return c2 == 200 || c2 == 201
     }
 
+    /** open pull requests opened by the autofix bot: (number, title, url) */
+    fun openFixPrs(): List<Triple<Int, String, String>> {
+        val (c, t) = req("GET", "pulls?state=open&per_page=30", null, Keys.fixRepo)
+        if (c != 200) return emptyList()
+        val arr = JSONArray(t)
+        val out = ArrayList<Triple<Int, String, String>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val ref = o.optJSONObject("head")?.optString("ref") ?: ""
+            if (ref.startsWith("autofix/")) out.add(Triple(o.optInt("number"), o.optString("title"), o.optString("html_url")))
+        }
+        return out
+    }
+
+    /** merges ONLY a pull request that comes from an autofix/ branch */
+    fun mergeFixPr(number: Int): Pair<Boolean, String> {
+        val (c0, t0) = req("GET", "pulls/$number", null, Keys.fixRepo)
+        if (c0 != 200) return false to "مش لاقي الإصلاح رقم $number"
+        val ref = JSONObject(t0).optJSONObject("head")?.optString("ref") ?: ""
+        if (!ref.startsWith("autofix/")) return false to "ده مش إصلاح من بوت المشاكل"
+        val (c, _) = req("PUT", "pulls/$number/merge", JSONObject().put("merge_method", "squash"), Keys.fixRepo)
+        return if (c == 200) true to "اتدمج" else false to "الدمج فشل ($c)"
+    }
+
     fun createIssue(title: String, body: String, labels: List<String>): Boolean {
         val j = JSONObject().put("title", title.take(200)).put("body", body.take(60000)).put("labels", JSONArray(labels))
         val (c, _) = req("POST", "issues", j, Keys.fixRepo)
