@@ -20,7 +20,7 @@ object Config {
     fun chunkSeconds() = json.optInt("chunk_seconds", 6)
     fun silenceRms() = json.optDouble("silence_rms", 300.0)
     fun allowedCaller() = json.optString("allowed_caller", "")
-    fun brain() = json.optString("brain", "auto")
+    fun brain(): String = Keys.brainOrNull() ?: json.optString("brain", "auto")
     fun ttsProvider() = json.optString("tts_provider", "auto")
     fun ttsVoice() = json.optString("tts_voice", "onyx")
     fun groqArabicVoice() = json.optString("groq_arabic_voice", "fahad")

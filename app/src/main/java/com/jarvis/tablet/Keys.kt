@@ -65,6 +65,10 @@ object Keys {
     val autoReport: Boolean get() = sp.getBoolean("autoreport", true)
     /** repo that receives problem reports (and runs the autofix workflow); separate from the memory repo */
     val fixRepo: String get() = (sp.getString("fixrepo", null) ?: "").takeIf { it.contains("/") } ?: "y01854993-star/Jarvis-Android"
+    fun routePref(task: String): String? = if (::sp.isInitialized) sp.getString("route_$task", null)?.takeIf { it.isNotBlank() } else null
+    fun setRoutePref(task: String, provider: String) { if (::sp.isInitialized) sp.edit().putString("route_$task", provider).apply() }
+    fun brainOrNull(): String? = if (::sp.isInitialized) sp.getString("brain_override", null)?.takeIf { it.isNotBlank() } else null
+    fun setBrain(b: String) { if (::sp.isInitialized) sp.edit().putString("brain_override", if (b == "auto") "" else b).apply() }
     fun langOrNull(): String? = if (::sp.isInitialized) sp.getString("lang", null) else null
     fun setLang(l: String) { if (::sp.isInitialized && (l == "ar-EG" || l == "en-US")) sp.edit().putString("lang", l).apply() }
     val perf: String get() = sp.getString("perf", "balanced") ?: "balanced"

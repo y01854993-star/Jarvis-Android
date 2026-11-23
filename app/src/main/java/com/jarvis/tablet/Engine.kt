@@ -119,6 +119,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         Memory.init(ctx)
         Brain.init(ctx)
         Health.init(ctx)
+        Usage.init(ctx)
         Problems.init(ctx)
         AutoReply.init(ctx)
         Brain.recentTurns(12).forEach { history.addLast(it) }
@@ -146,13 +147,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             Keys.setStudy(on, if (on) System.currentTimeMillis() + 3 * 3600_000L else 0L)
             Bus.say("j", if (on) "📚 وضع المذاكرة شغال (3 ساعات). هرد على المكالمات." else "وضع المذاكرة اتقفل")
         }
-        scope.launch(Dispatchers.IO) {
-            delay(4000)
-            while (isActive) {
-                try { healthCheck() } catch (_: Exception) {}
-                delay(if (Keys.perf == "saver") 24L * 3600 * 1000 else 6L * 3600 * 1000)
-            }
-        }
+        scope.launch(Dispatchers.IO) { delay(3000); emitReady() }
         Bus.onTestVoice = { scope.launch(Dispatchers.Default) { deadTts.clear(); speak("This is my voice. Can you hear me, Boss?", false) } }
         if (!crashHandlerInstalled) {
             crashHandlerInstalled = true
@@ -618,6 +613,19 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 if (u != null && launch(Intent(Intent.ACTION_VIEW).setDataAndType(u, "text/plain").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))) null
                 else "معرفتش أفتح الملف، هو في Documents/JARVIS/problems.md"
             }
+            "router_status" -> { agentSummary = routerSummary(); null }
+            "route_set" -> {
+                val taskN = a.optString("task", "all").lowercase()
+                val prov = a.optString("provider", "auto").lowercase()
+                val okTasks = setOf("all", "chat", "coding", "reasoning", "translation", "summarization", "planning", "android_control", "vision")
+                if (taskN !in okTasks || prov !in (Router.PROVIDERS + "auto")) "المهمة أو الموديل مش معروف"
+                else {
+                    if (taskN == "all") Keys.setBrain(prov) else Keys.setRoutePref(taskN, if (prov == "auto") "" else prov)
+                    val scope = if (taskN == "all") "الموديل الأساسي" else "موديل مهام $taskN"
+                    agentSummary = if (prov == "auto") "رجّعت الاختيار التلقائي ($scope)" else "تمام، $scope بقى $prov"
+                    null
+                }
+            }
             "diagnose" -> { agentSummary = diagnose(); null }
             "fixes_list" -> {
                 val list = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.openFixPrs() }
@@ -942,6 +950,8 @@ $extraRules
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
 - {"type":"selftest"}: اختبار ذاتي بينفذ كام مهمة تجريبية آمنة على الموبايل (إعدادات، ساعة، حاسبة، يوتيوب، كروم) وبيحفظ اللي نجح كمهارة. استخدمه لما المستخدم يقول درّب نفسك أو جرّب نفسك أو اعمل اختبار
 - {"type":"deep_link","url":"..."}: يفتح لينك مباشرة في التطبيق المناسب وده أسرع وأضمن من التحكم في الشاشة. أمثلة: تليجرام tg://resolve?domain=USERNAME ، زوم zoommtg://zoom.us/join?confno=ID&pwd=PASS ، انستجرام instagram://user?username=NAME ، واتساب https://wa.me/NUMBER . المسموح: https http tg zoommtg zoomus instagram whatsapp spotify vnd.youtube fb mailto tel geo
+- {"type":"router_status"}: يقول إحصائيات الموديلات (عدد الطلبات والأخطاء وأي موديل موقوف مؤقتاً) والاختيار الحالي
+- {"type":"route_set","task":"all|chat|coding|reasoning|translation|summarization|planning|android_control|vision","provider":"auto|gemini|groq|deepseek|openai|kimi"}: يغيّر الموديل المفضل لنوع مهمة أو للكل. auto يرجّع الاختيار التلقائي. التطبيق بيستخدم موديل واحد في كل طلب وبيحوّل للتالي بس لو فشل
 - {"type":"diagnose"}: يفحص الصلاحيات والخدمات والمفاتيح والإنترنت ويقولك إيه الناقص، ويسجل المشاكل في ملف المشاكل. استخدمه لما المستخدم يقول شوف المشاكل أو إيه اللي مش شغال
 - {"type":"fixes_list"}: يقرأ الإصلاحات اللي بوت المشاكل اقترحها (Pull Requests)
 - {"type":"fixes_apply","number":N}: يدمج إصلاح مقترح بعد تأكيد صوتي. لا تستخدمه إلا لو المستخدم طلب صراحة وقال رقم الإصلاح
@@ -1108,13 +1118,12 @@ $extraRules
             RegexOption.IGNORE_CASE).containsMatchIn(t)
     }
 
-    /** smart routing: easy requests -> fast model, hard ones -> strongest available; never all at once */
-    private fun providerOrder(text: String): List<String> = when (Config.brain()) {
-        "groq" -> listOf("groq", "gemini", "deepseek", "openai", "kimi")
-        "openai" -> listOf("openai", "gemini", "deepseek", "groq", "kimi")
-        "gemini" -> listOf("gemini", "groq", "deepseek", "openai", "kimi")
-        else -> if (isDeep(text)) listOf("deepseek", "gemini", "openai", "kimi", "groq")
-                else listOf("gemini", "groq", "deepseek", "openai", "kimi")
+    private fun availableProviders(): Set<String> = buildSet {
+        if (Keys.gemini.isNotBlank()) add("gemini")
+        if (Keys.groq.isNotBlank()) add("groq")
+        if (Keys.openai.isNotBlank()) add("openai")
+        if (Keys.ds.isNotBlank()) add("deepseek")
+        if (Keys.kimi.isNotBlank()) add("kimi")
     }
 
     private fun llmCall(text: String): JSONObject {
@@ -1123,12 +1132,13 @@ $extraRules
         val user = if (note.isEmpty()) text else "$text\n\n[$note]"
         val deep = isDeep(text)
         val errs = ArrayList<String>()
-        val order = buildList<String> {
-            if (Keys.localOn) add("local")
-            if (!(Keys.localOn && Keys.localOnly)) addAll(providerOrder(text))
-        }
-        val cands = order.filter { !Health.isDisabled(it) }.ifEmpty { order }
+        val task = Router.classify(text)
+        val cloud = if (Keys.localOn && Keys.localOnly) emptyList() else Router.order(
+            task, Keys.routePref(task.name.lowercase()), Config.brain(), availableProviders(),
+            Router.PROVIDERS.filter { Health.isDisabled(it) }.toSet(), 3)
+        val cands = (if (Keys.localOn) listOf("local") else emptyList()) + cloud
         for (p in cands) {
+            val t0 = System.currentTimeMillis()
             try {
                 val r: JSONObject? = when (p) {
                     "openai" -> if (Keys.openai.isNotBlank()) openAiChat(
@@ -1148,12 +1158,15 @@ $extraRules
                 }
                 if (r != null) {
                     Health.markOk(p)
-                    Bus.log("BRAIN: $p" + if (deep) " (deep)" else "")
+                    Usage.record(p, true, System.currentTimeMillis() - t0)
+                    Bus.log("BRAIN: $p [${task.name.lowercase()}]" + if (deep) " (deep)" else "")
                     return r
                 }
             } catch (e: Exception) {
                 Health.markFail(p, e)
+                Usage.record(p, false, System.currentTimeMillis() - t0, shortErr(e))
                 errs.add("$p: ${shortErr(e)}")
+                if (e is HttpException && (e.code == 401 || e.code == 403)) Bus.say("j", "⚠️ مفتاح $p مش شغال (${e.code}). بحوّل للموديل اللي بعده.")
             }
         }
         if (errs.isNotEmpty()) throw AllFailedException(
@@ -1205,20 +1218,34 @@ $extraRules
     }
 
     private fun agentChat(sys: String, user: String, img: String? = null): JSONObject {
-        val order = when (Config.brain()) { "groq" -> listOf("groq", "gemini", "openai"); "openai" -> listOf("openai", "gemini", "groq"); else -> listOf("gemini", "groq", "openai") }
+        val avail = availableProviders().filter { it == "gemini" || it == "groq" || it == "openai" }.toSet()
+        val usable = Router.order(Router.Task.ANDROID_CONTROL, Keys.routePref("android_control"), Config.brain(), avail,
+            Router.PROVIDERS.filter { Health.isDisabled(it) }.toSet(), 3)
         val errs = ArrayList<String>()
-        for (p in order) {
+        for (p in usable) {
+            val t0 = System.currentTimeMillis()
             try {
-                if (p == "openai" && Keys.openai.isNotBlank()) return openAiChat(
-                    "https://api.openai.com/v1/chat/completions", Keys.openai,
-                    Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, user, false, img)
-                if (p == "groq" && Keys.groq.isNotBlank()) return openAiChat(
-                    "https://api.groq.com/openai/v1/chat/completions", Keys.groq,
-                    if (img != null) Config.list("groq_vision_models").ifEmpty { listOf("meta-llama/llama-4-scout-17b-16e-instruct") }
-                    else Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") },
-                    sys, user, false, img)
-                if (p == "gemini" && Keys.gemini.isNotBlank()) return geminiJson(sys, user, img)
-            } catch (e: Exception) { Health.markFail(p, e); errs.add("$p: ${shortErr(e)}") }
+                val r: JSONObject? = when (p) {
+                    "openai" -> openAiChat("https://api.openai.com/v1/chat/completions", Keys.openai,
+                        Config.list("openai_models").ifEmpty { listOf("gpt-4o") }, sys, user, false, img)
+                    "groq" -> openAiChat("https://api.groq.com/openai/v1/chat/completions", Keys.groq,
+                        if (img != null) Config.list("groq_vision_models").ifEmpty { listOf("meta-llama/llama-4-scout-17b-16e-instruct") }
+                        else Config.list("groq_models").ifEmpty { listOf("llama-3.3-70b-versatile") },
+                        sys, user, false, img)
+                    "gemini" -> geminiJson(sys, user, img)
+                    else -> null
+                }
+                if (r != null) {
+                    Health.markOk(p)
+                    Usage.record(p, true, System.currentTimeMillis() - t0)
+                    return r
+                }
+            } catch (e: Exception) {
+                Health.markFail(p, e)
+                Usage.record(p, false, System.currentTimeMillis() - t0, shortErr(e))
+                errs.add("$p: ${shortErr(e)}")
+                if (e is HttpException && (e.code == 401 || e.code == 403)) Bus.say("j", "⚠️ مفتاح $p مش شغال (${e.code}). بحوّل للموديل اللي بعده.")
+            }
         }
         if (errs.isNotEmpty()) throw AllFailedException(errs.joinToString(" | "))
         throw NoKeyException()
@@ -2453,56 +2480,79 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
         else -> """شخصيتك: صاحب مقرّب وذكي، مش خدام ولا موظف. اتكلم بعفوية وبالعامية المصرية الحقيقية زي ما بتكلم صاحبك، هزّر لما يناسب، وقول رأيك بصراحة، وعلّق على الكلام زي الصحاب. ممنوع الجمل الرسمية زي "تحت أمرك" و"في خدمتك" و"حاضر يا فندم". نادي المستخدم "${Keys.name}" كلقب صحوبية من وقت للتاني مش في كل رد. الرد قصير وطبيعي من غير مقدمات ولا تكرار، ولو بتتكلم English خليك casual برضه."""
     }
 
-    // ------------------------------------------------------------ real health check (parallel pings, silent cooldown)
-    private fun pingOpenAi(url: String, key: String, model: String) {
-        val body = JSONObject().put("model", model).put("max_tokens", 1)
-            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "ping")))
-        postJson(url, mapOf("Authorization" to "Bearer $key"), body, 5000, 12000)
+    // ------------------------------------------------------------ key validation (on demand, sequential, costs no completion quota)
+    private fun getText(url: String, headers: Map<String, String>): String {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 6000
+            conn.readTimeout = 10000
+            for ((k, v) in headers) conn.setRequestProperty(k, v)
+            val code = conn.responseCode
+            if (code != 200) {
+                val err = try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (_: Exception) { "" }
+                throw HttpException(code, err)
+            }
+            return conn.inputStream.bufferedReader().readText()
+        } finally {
+            conn.disconnect()
+        }
     }
 
-    private fun pingGemini() {
-        val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "ping")))))
-            .put("generationConfig", JSONObject().put("maxOutputTokens", 1))
-        geminiCall(body)
+    /** lists the provider's models with the key: proves the key works without spending any generation quota */
+    private fun validateKey(name: String) {
+        when (name) {
+            "gemini" -> getText("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", mapOf("x-goog-api-key" to Keys.gemini))
+            "groq" -> getText("https://api.groq.com/openai/v1/models", mapOf("Authorization" to "Bearer ${Keys.groq}"))
+            "openai" -> getText("https://api.openai.com/v1/models", mapOf("Authorization" to "Bearer ${Keys.openai}"))
+            "deepseek" -> getText("https://api.deepseek.com/models", mapOf("Authorization" to "Bearer ${Keys.ds}"))
+            "kimi" -> getText("https://api.moonshot.ai/v1/models", mapOf("Authorization" to "Bearer ${Keys.kimi}"))
+            "local" -> localPing()
+        }
     }
 
+    /** instant, network-free count of providers that have a key and are not in cooldown */
+    private fun emitReady() {
+        val ready = availableProviders().count { !Health.isDisabled(it) } + (if (Keys.localOn) 1 else 0)
+        Bus.emit(JSONObject().put("type", "health").put("text", "$ready Models Ready").put("ready", ready))
+    }
+
+    /** only when the user asks (button or voice). One provider at a time, 0.7 s apart. */
     private suspend fun healthCheck() {
         if (!isOnline() && !Keys.localOn) return
-        val results = coroutineScope {
-            val jobs = ArrayList<kotlinx.coroutines.Deferred<Pair<String, Exception?>>>()
-            fun add(name: String, block: () -> Unit) {
-                jobs.add(async(Dispatchers.IO) { try { block(); name to null } catch (e: Exception) { name to e } })
-            }
-            if (Keys.gemini.isNotBlank()) add("gemini") { pingGemini() }
-            if (Keys.groq.isNotBlank()) add("groq") {
-                pingOpenAi("https://api.groq.com/openai/v1/chat/completions", Keys.groq, Config.list("groq_models").firstOrNull() ?: "llama-3.3-70b-versatile")
-            }
-            if (Keys.openai.isNotBlank()) add("openai") {
-                pingOpenAi("https://api.openai.com/v1/chat/completions", Keys.openai, Config.list("openai_models").lastOrNull() ?: "gpt-4o-mini")
-            }
-            if (Keys.ds.isNotBlank()) add("deepseek") {
-                pingOpenAi("https://api.deepseek.com/chat/completions", Keys.ds, Config.list("deepseek_models").firstOrNull() ?: "deepseek-chat")
-            }
-            if (Keys.kimi.isNotBlank()) add("kimi") {
-                pingOpenAi("https://api.moonshot.ai/v1/chat/completions", Keys.kimi, Config.list("kimi_models").firstOrNull() ?: "kimi-k2-0905-preview")
-            }
-            if (Keys.localOn) add("local") { localPing() }
-            jobs.awaitAll()
-        }
         val ready = ArrayList<String>()
         val bad = ArrayList<String>()
-        for ((name, err) in results) {
-            if (err == null) { Health.markOk(name); ready.add(name) }
-            else {
-                Health.markFail(name, err)
-                bad.add("$name: ${shortErr(err)}" + if (Health.isDisabled(name)) " (متعطل 24 ساعة)" else "")
+        val names = availableProviders().toMutableList().also { if (Keys.localOn) it.add("local") }
+        for (name in names) {
+            try {
+                validateKey(name)
+                Health.markOk(name)
+                ready.add(name)
+            } catch (e: HttpException) {
+                when (e.code) {
+                    429 -> ready.add("$name (مشغول)")
+                    401, 403 -> bad.add("$name: المفتاح غلط")
+                    else -> bad.add("$name: ${shortErr(e)}")
+                }
+            } catch (e: Exception) {
+                bad.add("$name: ${shortErr(e)}")
             }
+            delay(700)
         }
         Bus.emit(JSONObject().put("type", "health").put("text", "${ready.size} Models Ready").put("ready", ready.size))
         if (ready.isNotEmpty()) Bus.say("j", "✅ شغالين: " + ready.joinToString("، "))
         if (bad.isNotEmpty()) { Bus.say("j", "⏸ " + bad.joinToString(" | ")); Problems.add("health: " + bad.joinToString(" | ")) }
         try { Problems.export(ctx) } catch (_: Exception) {}
+    }
+
+    private fun routerSummary(): String {
+        val ps = availableProviders().toList() + (if (Keys.localOn) listOf("local") else emptyList())
+        if (ps.isEmpty()) return "مفيش ولا مفتاح موديل متسجل"
+        return ps.joinToString("، ") { p ->
+            val st = Usage.stat(p)
+            val cd = Health.remainingMs(p)
+            "$p: ${st.first} طلب، ${st.second} فشل" + (if (cd > 0) "، موقوف ${cd / 60000 + 1} دقيقة" else "")
+        } + ". الاختيار: " + (if (Config.brain() == "auto") "تلقائي حسب نوع المهمة" else Config.brain())
     }
 
     // ------------------------------------------------------------ study mode: Jarvis screens the calls

@@ -17,6 +17,11 @@ object Health {
 
     fun isDisabled(p: String): Boolean = ready() && System.currentTimeMillis() < sp.getLong("until_$p", 0L)
 
+    fun remainingMs(p: String): Long =
+        if (!ready()) 0L else (sp.getLong("until_$p", 0L) - System.currentTimeMillis()).coerceAtLeast(0L)
+
+    fun why(p: String): String = if (ready()) sp.getString("why_$p", "") ?: "" else ""
+
     fun markOk(p: String) {
         if (!ready()) return
         sp.edit().remove("until_$p").remove("why_$p").putInt("fails_$p", 0).apply()

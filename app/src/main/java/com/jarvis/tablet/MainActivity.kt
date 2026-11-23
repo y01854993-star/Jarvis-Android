@@ -39,6 +39,7 @@ class MainActivity : Activity() {
                 }
             }
             @JavascriptInterface fun reportProblem(s: String) { Problems.add(s.take(300)) }
+            @JavascriptInterface fun routerStats(): String = try { Usage.dashboard().toString() } catch (_: Exception) { "{}" }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun testVoice() { Bus.onTestVoice?.invoke() }

@@ -1,0 +1,73 @@
+{
+ "light_queries_per_run": 4,
+ "deep_queries_per_run": 40,
+ "per_query_results": 8,
+ "light_max_evaluations": 12,
+ "deep_max_evaluations": 40,
+ "min_stars": 50,
+ "max_months_since_push": 12,
+ "recommend_threshold": 70,
+ "reject_copyleft": true,
+ "allowed_licenses": [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MPL-2.0",
+  "Unlicense",
+  "0BSD",
+  "CC0-1.0",
+  "Zlib"
+ ],
+ "copyleft_licenses": [
+  "GPL-2.0",
+  "GPL-3.0",
+  "AGPL-3.0",
+  "LGPL-2.1",
+  "LGPL-3.0",
+  "GPL-2.0-only",
+  "GPL-3.0-only",
+  "AGPL-3.0-only",
+  "LGPL-3.0-only"
+ ],
+ "categories": {
+  "intelligence": [
+   "llm agent framework",
+   "agent long term memory",
+   "tool calling llm android",
+   "llm router fallback"
+  ],
+  "android_control": [
+   "android accessibility service automation",
+   "android ui automation llm agent",
+   "android notification listener assistant"
+  ],
+  "voice": [
+   "wake word detection android",
+   "arabic speech recognition",
+   "offline speech recognition android",
+   "text to speech engine android"
+  ],
+  "vision": [
+   "ocr android",
+   "screen understanding gui agent",
+   "on-device vision model android"
+  ],
+  "software_engineering": [
+   "autonomous coding agent",
+   "automated bug fixing llm",
+   "repository analysis llm"
+  ],
+  "security": [
+   "android secure storage library",
+   "android permission audit",
+   "android vulnerability scanner"
+  ],
+  "performance": [
+   "on-device llm inference android",
+   "llama.cpp android",
+   "android battery optimization library"
+  ]
+ }
+}
