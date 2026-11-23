@@ -87,9 +87,15 @@ jobs:
         if: steps.fix.outputs.edited != 'true'
         run: |
           N="${{ steps.req.outputs.n }}"
-          { cat report_head.md; printf '\n_No code change was proposed. Nothing was modified. Model: %s_\n' "${{ steps.fix.outputs.model }}"; } > comment.md
-          gh issue comment "$N" --body-file comment.md
-          gh issue edit "$N" --add-label "status:no-code-fix" --remove-label "status:investigating" || true
+          if [ "${{ steps.fix.outputs.model }}" = "none" ]; then
+            { cat report_head.md; printf '\n**Setup needed:** no AI model could be reached. Add the `ANTHROPIC_API_KEY` (primary) or `GEMINI_API_KEY` secret in Settings > Secrets and variables > Actions, then comment `/fix` on this issue to retry. Nothing was modified.\n'; } > comment.md
+            gh issue comment "$N" --body-file comment.md
+            gh issue edit "$N" --add-label "status:failed" --remove-label "status:investigating" || true
+          else
+            { cat report_head.md; printf '\n_No code change was proposed. Nothing was modified. Model: %s_\n' "${{ steps.fix.outputs.model }}"; } > comment.md
+            gh issue comment "$N" --body-file comment.md
+            gh issue edit "$N" --add-label "status:no-code-fix" --remove-label "status:investigating" || true
+          fi
       - uses: actions/setup-java@v4
         if: steps.fix.outputs.edited == 'true'
         with:
