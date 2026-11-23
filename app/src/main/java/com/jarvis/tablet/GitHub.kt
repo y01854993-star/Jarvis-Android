@@ -83,6 +83,60 @@ object GitHub {
         return if (c == 200) true to "اتدمج" else false to "الدمج فشل ($c)"
     }
 
+    /** numbers for the ENGINEER dashboard, read from the fix repo (issues labelled jarvis-problem, autofix pull requests, last build) */
+    fun fixStats(): JSONObject {
+        val repo = Keys.fixRepo
+        val out = JSONObject()
+        val (ci, ti) = req("GET", "issues?labels=jarvis-problem&state=all&per_page=100", null, repo)
+        if (ci != 200) return out
+        var total = 0; var fresh = 0; var investigating = 0; var awaiting = 0
+        var rejected = 0; var resolved = 0; var failed = 0; var noFix = 0
+        val issues = JSONArray(ti)
+        for (i in 0 until issues.length()) {
+            val o = issues.getJSONObject(i)
+            if (o.has("pull_request")) continue
+            total++
+            val names = HashSet<String>()
+            val ls = o.optJSONArray("labels")
+            if (ls != null) for (j in 0 until ls.length()) names.add(ls.getJSONObject(j).optString("name"))
+            when {
+                "status:resolved" in names -> resolved++
+                "status:rejected" in names -> rejected++
+                "status:awaiting-approval" in names -> awaiting++
+                "status:investigating" in names -> investigating++
+                "status:failed" in names -> failed++
+                "status:no-code-fix" in names -> noFix++
+                o.optString("state") == "open" -> fresh++
+            }
+        }
+        var approved = 0
+        val prs = JSONArray()
+        val (cp, tp) = req("GET", "pulls?state=all&per_page=30", null, repo)
+        if (cp == 200) {
+            val arr = JSONArray(tp)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val ref = o.optJSONObject("head")?.optString("ref") ?: ""
+                if (!ref.startsWith("autofix/")) continue
+                if (o.optString("state") == "open") prs.put(JSONObject().put("n", o.optInt("number")).put("title", o.optString("title")).put("url", o.optString("html_url")))
+                else if (!o.isNull("merged_at")) approved++
+            }
+        }
+        var build = "--"
+        val (cr, tr) = req("GET", "actions/workflows/build.yml/runs?per_page=1", null, repo)
+        if (cr == 200) {
+            val runs = JSONObject(tr).optJSONArray("workflow_runs")
+            if (runs != null && runs.length() > 0) {
+                val r = runs.getJSONObject(0)
+                build = (if (r.isNull("conclusion")) r.optString("status") else r.optString("conclusion")) + " (" + r.optString("head_branch") + ")"
+            }
+        }
+        return out.put("total", total).put("fresh", fresh).put("investigating", investigating).put("awaiting", awaiting)
+            .put("approved", approved).put("rejected", rejected).put("resolved", resolved).put("failed", failed)
+            .put("noFix", noFix).put("prs", prs).put("build", build)
+            .put("releases", "https://github.com/$repo/releases").put("actions", "https://github.com/$repo/actions")
+    }
+
     fun createIssue(title: String, body: String, labels: List<String>): Boolean {
         val j = JSONObject().put("title", title.take(200)).put("body", body.take(60000)).put("labels", JSONArray(labels))
         val (c, _) = req("POST", "issues", j, Keys.fixRepo)

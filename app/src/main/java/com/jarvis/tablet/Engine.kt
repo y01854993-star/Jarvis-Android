@@ -92,6 +92,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     private val bad = HashMap<String, Pair<Long, Int>>()
     @Volatile private var agentSummary: String? = null
     private var studyEndJob: kotlinx.coroutines.Job? = null
+    private var crashHandlerInstalled = false
     @Volatile private var lastToolResult = ""
     private var summarizing = false
     private var recordingName = ""
@@ -153,6 +154,17 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             }
         }
         Bus.onTestVoice = { scope.launch(Dispatchers.Default) { deadTts.clear(); speak("This is my voice. Can you hear me, Boss?", false) } }
+        if (!crashHandlerInstalled) {
+            crashHandlerInstalled = true
+            val prevHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { th, ex ->
+                try {
+                    val where = ex.stackTrace.take(6).joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+                    Problems.add("CRASH in ${th.name}: ${ex.javaClass.simpleName}: ${(ex.message ?: "").take(160)} @ $where")
+                } catch (_: Throwable) {}
+                prevHandler?.uncaughtException(th, ex)
+            }
+        }
         scope.launch(Dispatchers.IO) { delay(2500); prewarm() }
         scope.launch(Dispatchers.IO) {
             delay(6000)

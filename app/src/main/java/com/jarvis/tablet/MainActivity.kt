@@ -32,6 +32,13 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(object {
             @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
             @JavascriptInterface fun setLang(l: String) { Keys.setLang(l) }
+            @JavascriptInterface fun fixStats(): String = try { GitHub.fixStats().toString() } catch (_: Exception) { "{}" }
+            @JavascriptInterface fun openUrl(u: String) {
+                if (u.startsWith("https://github.com/")) {
+                    try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(u)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
+                }
+            }
+            @JavascriptInterface fun reportProblem(s: String) { Problems.add(s.take(300)) }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun testVoice() { Bus.onTestVoice?.invoke() }
