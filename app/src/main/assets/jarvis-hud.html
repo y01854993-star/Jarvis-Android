@@ -187,6 +187,10 @@ details.sub>summary::after{content:" ▾";opacity:.6}
 <summary>MODELS</summary>
 <div id="modelBody" style="font-size:13px;line-height:1.7">tap to load</div>
 </details>
+<details class="panel sub" id="skillPanel">
+<summary>DISCOVER NEW SKILLS</summary>
+<div id="skillBody" style="font-size:13px;line-height:1.7">tap to load</div>
+</details>
 </main>
 
 <div class="bottom-bar">
@@ -280,6 +284,68 @@ function loadModels(){
   Object.keys(d.prefs||{}).forEach(function(t){ add("prefer "+t,d.prefs[t]); });
 }
 document.addEventListener("toggle",function(ev){ if(ev.target&&ev.target.id==="modelPanel"&&ev.target.open)loadModels(); },true);
+function skillBtn(label,onTap,danger){
+  const b=document.createElement("button"); b.type="button"; b.className="lnk"+(danger?" danger":"");
+  b.style.cssText="display:inline-block;width:auto;margin:6px 6px 0 0;padding:6px 10px";
+  b.textContent=label; b.onclick=onTap; return b;
+}
+function skillConfirmBtn(label,issue,cmd,danger,out){
+  let armed=false,timer=0;
+  const b=skillBtn(label,function(){
+    if(!armed){ armed=true; b.textContent="Tap again to confirm"; timer=setTimeout(function(){armed=false;b.textContent=label;},4000); return; }
+    clearTimeout(timer); armed=false; b.textContent=label;
+    let r="failed"; try{ r=AndroidBridge.skillAction(issue,cmd); }catch(_){}
+    out.textContent=(r==="ok")?"Sent "+cmd+". GitHub will answer on the issue.":"Could not send ("+r+")";
+  },danger);
+  return b;
+}
+function skillCard(c){
+  const wrap=document.createElement("div");
+  wrap.style.cssText="border:1px solid rgba(34,211,238,.25);border-radius:10px;padding:8px;margin-top:8px";
+  const add=function(text,css){ const d=document.createElement("div"); if(css)d.style.cssText=css; d.textContent=text; wrap.appendChild(d); return d; };
+  add(c.repo+(c.score!=null?"  ("+c.score+"/100)":""),"font-weight:600");
+  add([c.category,c.compatibility,c.status].filter(Boolean).join(" | "),"opacity:.75;font-size:12px");
+  if(c.description)add(c.description,"font-size:12px");
+  if(c.benefits)add("Benefit: "+c.benefits,"font-size:12px");
+  if(c.security)add("Security: "+c.security,"font-size:12px");
+  if(c.recommendation)add("AI: "+c.recommendation,"font-size:12px");
+  const out=add("","font-size:12px;color:#22d3ee");
+  const row=document.createElement("div"); wrap.appendChild(row);
+  const open=function(u){ return function(){ try{ AndroidBridge.openUrl(u); }catch(_){} }; };
+  if(c.url)row.appendChild(skillBtn("Repo",open(c.url)));
+  if(c.issue_url)row.appendChild(skillBtn("Details",open(c.issue_url)));
+  if(c.pr_url)row.appendChild(skillBtn("Pull request",open(c.pr_url)));
+  if(c.issue&&c.status==="AWAITING_APPROVAL"){
+    row.appendChild(skillConfirmBtn("Approve",c.issue,"/approve",false,out));
+    row.appendChild(skillConfirmBtn("Test branch",c.issue,"/test",false,out));
+    row.appendChild(skillConfirmBtn("More info",c.issue,"/info",false,out));
+    row.appendChild(skillConfirmBtn("Reject",c.issue,"/reject",true,out));
+  }
+  return wrap;
+}
+function loadSkills(){
+  const b=$("skillBody"); if(!b)return;
+  if(!(window.AndroidBridge&&AndroidBridge.skillStats)){ b.textContent="--"; return; }
+  b.textContent="...";
+  setTimeout(function(){
+    let d={}; try{ d=JSON.parse(AndroidBridge.skillStats()||"{}"); }catch(_){}
+    b.textContent="";
+    if(!d||d.total===undefined){
+      b.textContent=currentLang==="en-US"?"No discovery data yet. Merge the workflows into main and run the Skill hunter.":"مفيش بيانات اكتشاف لسه. ادمج الـ workflows في main وشغّل Skill hunter.";
+      return;
+    }
+    const row=function(a,v){ const r=document.createElement("div"); r.className="m"; const x=document.createElement("span"); x.textContent=a; const y=document.createElement("span"); y.textContent=String(v); r.appendChild(x); r.appendChild(y); b.appendChild(r); };
+    const c=d.counts||{};
+    row("Discovered",d.total); row("New this week",d.new_this_week); row("Recommended",(c.RECOMMENDED||0));
+    row("Pending approval",(c.AWAITING_APPROVAL||0)); row("Integrated",(c.INTEGRATED||0)); row("Rejected",(c.REJECTED||0)); row("Failed",(c.FAILED||0));
+    (d.pending||[]).forEach(function(p){ b.appendChild(skillCard(p)); });
+    const h=document.createElement("div"); h.style.cssText="margin-top:10px;opacity:.8;font-size:12px"; h.textContent="Latest research"; b.appendChild(h);
+    (d.latest||[]).slice(0,5).forEach(function(p){ row(String(p.repo).slice(0,28),p.status); });
+    const s=document.createElement("div"); s.style.cssText="margin-top:10px;opacity:.8;font-size:12px"; s.textContent="Search history"; b.appendChild(s);
+    (d.history||[]).slice(-5).reverse().forEach(function(r){ row(String(r.ts).slice(0,10)+" "+r.mode, r.evaluated+" evaluated, "+r.new+" new"); });
+  },50);
+}
+document.addEventListener("toggle",function(ev){ if(ev.target&&ev.target.id==="skillPanel"&&ev.target.open)loadSkills(); },true);
 const I18N_EN={"اسمك": "Your name", "Gemini API Key — المفتاح الأساسي (مجاني). لوحده بيشغّل: فهم الصوت + العقل + الصوت + الشاشة + الكاميرا": "Gemini API Key — main key (free). On its own it powers: speech recognition + brain + voice + screen + camera", "من: aistudio.google.com/apikey": "Get it at: aistudio.google.com/apikey", "إعدادات متقدمة (اختيارية)": "Advanced settings (optional)", "Groq Key (مجاني) — بديل سريع لفهم الصوت والعقل": "Groq Key (free) — fast alternative for speech and brain", "OpenAI Key (مدفوع) — اختياري": "OpenAI Key (paid) — optional", "Local Server URL (llama.cpp - بدون إنترنت)": "Local Server URL (llama.cpp, offline)", "استخدم المحرك المحلي (Local LLM)": "Use the local engine (Local LLM)", "محلي فقط (من غير إنترنت ولا سحابة)": "Local only (no internet, no cloud)", "التعرف على الصوت من الجهاز (SpeechRecognizer)": "On-device speech recognition (SpeechRecognizer)", "Fish Audio Key (صوت Jarvis MCU)": "Fish Audio Key (Jarvis MCU voice)", "Fish Voice ID (الصق رابط الصوت كامل أو الـ ID)": "Fish Voice ID (paste the full voice link or the ID)", "DeepSeek Key (اختياري)": "DeepSeek Key (optional)", "Kimi (Moonshot) Key (اختياري)": "Kimi (Moonshot) Key (optional)", "GitHub Token (لحفظ الذاكرة والمشاريع)": "GitHub Token (to save memory and projects)", "وضع الأداء والبطارية": "Performance and battery mode", "متوازن (الافتراضي)": "Balanced (default)", "أداء عالي (استماع حتى والشاشة مقفولة)": "High performance (listens even with the screen off)", "توفير طاقة (من غير استماع تلقائي ولا لقطات شاشة)": "Battery saver (no automatic listening, no screenshots)", "الاستيقاظ بالاسم (\"يا جارفيس\" / \"Yeah Boss\") - بيستخدم فهم الصوت على الجمل القصيرة بس": "Wake by name (\"Hey Jarvis\" / \"Yeah Boss\") - uses speech recognition on short phrases only", "اقفل الميزات الحساسة (رد تلقائي، تحكم، مكالمات، رسايل) ببصمة/قفل الجهاز": "Lock sensitive features (auto-reply, control, calls, messages) with fingerprint / device lock", "سرعة الكلام": "Speech speed", "درجة الصوت": "Voice pitch", "صبر الاستماع (كام ملي ثانية صمت قبل ما أعتبر إنك خلصت)": "Listening patience (ms of silence before I consider you finished)", "أدوات": "Tools", "فحص المفاتيح والاتصال": "Check keys and connection", "وضع المذاكرة (تشغيل / إيقاف)": "Study mode (on / off)", "تجربة الصوت": "Test voice", "فتح الميزات المقفولة (بصمة / قفل الجهاز)": "Unlock locked features (fingerprint / device lock)", "منطقة الخطر": "Danger zone", "مسح المفاتيح": "Clear keys", "مسح كل البيانات (ذاكرة + مفاتيح)": "Wipe all data (memory + keys)"};
 const I18N_ORIG=new WeakMap();
 function normT(s){return s.replace(/\s+/g," ").trim()}

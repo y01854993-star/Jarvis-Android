@@ -1,0 +1,56 @@
+name: Skill hunter
+# Discovers open-source projects that could improve JARVIS. It only researches and proposes: nothing is installed or integrated without your approval.
+# Daily = light scan (few queries), Sunday = deep scan. Results are stored on the data branch "skill-hunter-data" (never merged into main).
+on:
+  schedule:
+    - cron: "17 5 * * *"
+    - cron: "43 5 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: light or deep
+        required: false
+        default: light
+permissions:
+  contents: write
+  issues: write
+concurrency:
+  group: skill-hunter
+  cancel-in-progress: false
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      MODE: ${{ github.event.schedule == '43 5 * * 0' && 'deep' || inputs.mode || 'light' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Attach the data branch
+        run: |
+          if git ls-remote --exit-code --heads origin skill-hunter-data >/dev/null 2>&1; then
+            git fetch origin skill-hunter-data
+            git worktree add -B skill-hunter-data data origin/skill-hunter-data
+          else
+            git worktree add --detach data
+            (cd data && git checkout --orphan skill-hunter-data && git rm -rf . >/dev/null 2>&1 || true)
+          fi
+      - name: Discover and evaluate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AUTOFIX_MODEL: ${{ vars.AUTOFIX_MODEL }}
+          AUTOFIX_CLAUDE_MODEL: ${{ vars.AUTOFIX_CLAUDE_MODEL }}
+        run: |
+          case "$MODE" in light|deep) ;; *) MODE=light ;; esac
+          python3 .github/skillhunter/hunt.py --mode "$MODE" --data data | tee run.json
+          { echo "### Skill hunter ($MODE)"; echo '```json'; cat run.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Save results to the data branch
+        env:
+          MSG: skill hunter data
+        run: |
+          cd data
+          git add -A
+          if git diff --cached --quiet; then echo "no data changes"; else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "$MSG"
+            git push -q origin HEAD:skill-hunter-data
+          fi

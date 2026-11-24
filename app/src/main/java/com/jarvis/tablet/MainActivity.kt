@@ -39,6 +39,12 @@ class MainActivity : Activity() {
                 }
             }
             @JavascriptInterface fun reportProblem(s: String) { Problems.add(s.take(300)) }
+            @JavascriptInterface fun skillStats(): String = try { GitHub.skillSummary() ?: "{}" } catch (_: Exception) { "{}" }
+            @JavascriptInterface fun skillAction(issue: Int, cmd: String): String {
+                if (issue <= 0 || cmd !in setOf("/approve", "/reject", "/test", "/info")) return "refused"
+                val body = if (cmd == "/info") "/info please share more details and the main risks" else cmd
+                return try { if (GitHub.commentIssue(issue, body)) "ok" else "failed" } catch (_: Exception) { "failed" }
+            }
             @JavascriptInterface fun routerStats(): String = try { Usage.dashboard().toString() } catch (_: Exception) { "{}" }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }

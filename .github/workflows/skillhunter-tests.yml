@@ -1,0 +1,17 @@
+name: Skill hunter tests
+on:
+  push:
+    paths:
+      - ".github/skillhunter/**"
+  pull_request:
+    paths:
+      - ".github/skillhunter/**"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: python3 -m unittest discover -s .github/skillhunter/tests -v

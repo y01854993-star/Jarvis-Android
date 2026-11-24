@@ -137,6 +137,27 @@ object GitHub {
             .put("releases", "https://github.com/$repo/releases").put("actions", "https://github.com/$repo/actions")
     }
 
+    /** summary.json written by the skill hunter on the data branch of the fix repo */
+    fun skillSummary(): String? {
+        val (c, t) = req("GET", "contents/summary.json?ref=skill-hunter-data", null, Keys.fixRepo)
+        if (c != 200) return null
+        val b64 = JSONObject(t).optString("content", "")
+        if (b64.isBlank()) return null
+        return String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT), Charsets.UTF_8)
+    }
+
+    fun commentIssue(number: Int, body: String): Boolean {
+        val (c, _) = req("POST", "issues/$number/comments", JSONObject().put("body", body), Keys.fixRepo)
+        return c == 201
+    }
+
+    fun dispatch(workflowFile: String, inputs: Map<String, String>): Boolean {
+        val i = JSONObject()
+        inputs.forEach { (k, v) -> i.put(k, v) }
+        val (c, _) = req("POST", "actions/workflows/$workflowFile/dispatches", JSONObject().put("ref", "main").put("inputs", i), Keys.fixRepo)
+        return c == 204
+    }
+
     fun createIssue(title: String, body: String, labels: List<String>): Boolean {
         val j = JSONObject().put("title", title.take(200)).put("body", body.take(60000)).put("labels", JSONArray(labels))
         val (c, _) = req("POST", "issues", j, Keys.fixRepo)

@@ -444,7 +444,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** returns an error sentence, or null when OK */
     private suspend fun runAction(a: JSONObject): String? {
-        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "fixes_apply", "autoreply_set", "study_mode", "voice_message", "sms", "call",
+        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "fixes_apply", "skills_decide", "autoreply_set", "study_mode", "voice_message", "sms", "call",
                 "whatsapp", "whatsapp_group", "handoff", "github_save", "run_macro", "teach_start", "close_app", "youtube_play_channel")) {
             return "الميزة دي مقفولة. افتح التطبيق وادوس UNLOCK"
         }
@@ -612,6 +612,37 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 val u = withContext(Dispatchers.IO) { Problems.export(ctx) }
                 if (u != null && launch(Intent(Intent.ACTION_VIEW).setDataAndType(u, "text/plain").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))) null
                 else "معرفتش أفتح الملف، هو في Documents/JARVIS/problems.md"
+            }
+            "skills_list" -> {
+                val raw = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.skillSummary() }
+                if (raw == null) "مفيش بيانات اكتشاف لسه. قولّي ابدأ بحث عن مهارات جديدة"
+                else {
+                    val s = JSONObject(raw)
+                    val c = s.optJSONObject("counts") ?: JSONObject()
+                    val pend = s.optJSONArray("pending") ?: JSONArray()
+                    val names = (0 until minOf(3, pend.length())).joinToString("، ") { val o = pend.getJSONObject(it); "${o.optString("repo")} (${o.optInt("score")})" }
+                    agentSummary = "اكتشفت ${s.optInt("total")} مشروع، ${s.optInt("new_this_week")} منهم جداد الأسبوع ده. ${c.optInt("AWAITING_APPROVAL")} مستني موافقتك" +
+                        (if (names.isNotEmpty()) ": $names" else "") + ". اتدمج ${c.optInt("INTEGRATED")} ورفضت ${c.optInt("REJECTED")}"
+                    null
+                }
+            }
+            "skills_hunt" -> {
+                val mode = if (a.optString("mode") == "deep") "deep" else "light"
+                val ok = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.dispatch("skill-hunter.yml", mapOf("mode" to mode)) }
+                agentSummary = if (ok) "بدأت بحث $mode عن مهارات جديدة. النتايج هتبان في لوحة DISCOVER NEW SKILLS بعد دقايق"
+                else "معرفتش أبدأ البحث. اتأكد إن الـ workflow موجود على main وإن التوكن له صلاحية Actions"
+                null
+            }
+            "skills_decide" -> {
+                val num = a.optInt("issue", -1)
+                val dec = a.optString("decision")
+                if (num < 0 || dec !in setOf("approve", "reject", "test")) "قولي رقم المقترح وقرارك"
+                else if (!confirmAction("Skill proposal number $num: $dec. Go ahead, Boss?")) "تمام، الغيتها"
+                else {
+                    val ok = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.commentIssue(num, "/$dec") }
+                    agentSummary = if (ok) "بعتّ القرار ($dec). هيتجهز branch و Pull Request، ومحدّش بيدمج غيرك" else "معرفتش أبعت القرار"
+                    null
+                }
             }
             "router_status" -> { agentSummary = routerSummary(); null }
             "route_set" -> {
@@ -950,6 +981,9 @@ $extraRules
 - {"type":"agent","goal":"..."}: أي مهمة تانية على الموبايل محتاجة تتحكم في الشاشة بنفسك (تشغيل أو إيقاف واي فاي أو بلوتوث، حاجة جوه تطبيق، تصفح، تشغيل أغنية أو فيديو معين، تغيير إعداد، تعبئة نموذج، قراءة اللي على الشاشة والرد عليه). goal وصف كامل للمهمة بلغة المستخدم
 - {"type":"selftest"}: اختبار ذاتي بينفذ كام مهمة تجريبية آمنة على الموبايل (إعدادات، ساعة، حاسبة، يوتيوب، كروم) وبيحفظ اللي نجح كمهارة. استخدمه لما المستخدم يقول درّب نفسك أو جرّب نفسك أو اعمل اختبار
 - {"type":"deep_link","url":"..."}: يفتح لينك مباشرة في التطبيق المناسب وده أسرع وأضمن من التحكم في الشاشة. أمثلة: تليجرام tg://resolve?domain=USERNAME ، زوم zoommtg://zoom.us/join?confno=ID&pwd=PASS ، انستجرام instagram://user?username=NAME ، واتساب https://wa.me/NUMBER . المسموح: https http tg zoommtg zoomus instagram whatsapp spotify vnd.youtube fb mailto tel geo
+- {"type":"skills_list"}: يقول ملخص اكتشاف المهارات الجديدة (كام مشروع اتلقى، كام مستني موافقة، أحسن مقترحات)
+- {"type":"skills_hunt","mode":"light|deep"}: يبدأ بحث على GitHub عن مهارات ومكتبات جديدة تفيد جارفيس. البحث بس، مفيش تثبيت
+- {"type":"skills_decide","issue":N,"decision":"approve|reject|test"}: يبعت قرار المستخدم على مقترح مهارة (بعد تأكيد صوتي). approve بيجهّز branch و Pull Request ومفيش دمج من غير المستخدم
 - {"type":"router_status"}: يقول إحصائيات الموديلات (عدد الطلبات والأخطاء وأي موديل موقوف مؤقتاً) والاختيار الحالي
 - {"type":"route_set","task":"all|chat|coding|reasoning|translation|summarization|planning|android_control|vision","provider":"auto|gemini|groq|deepseek|openai|kimi"}: يغيّر الموديل المفضل لنوع مهمة أو للكل. auto يرجّع الاختيار التلقائي. التطبيق بيستخدم موديل واحد في كل طلب وبيحوّل للتالي بس لو فشل
 - {"type":"diagnose"}: يفحص الصلاحيات والخدمات والمفاتيح والإنترنت ويقولك إيه الناقص، ويسجل المشاكل في ملف المشاكل. استخدمه لما المستخدم يقول شوف المشاكل أو إيه اللي مش شغال
