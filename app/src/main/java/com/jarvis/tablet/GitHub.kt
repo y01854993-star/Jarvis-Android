@@ -92,6 +92,7 @@ object GitHub {
         var total = 0; var fresh = 0; var investigating = 0; var awaiting = 0
         var rejected = 0; var resolved = 0; var failed = 0; var noFix = 0
         val issues = JSONArray(ti)
+        val recent = JSONArray()
         for (i in 0 until issues.length()) {
             val o = issues.getJSONObject(i)
             if (o.has("pull_request")) continue
@@ -99,6 +100,11 @@ object GitHub {
             val names = HashSet<String>()
             val ls = o.optJSONArray("labels")
             if (ls != null) for (j in 0 until ls.length()) names.add(ls.getJSONObject(j).optString("name"))
+            if (recent.length() < 6) {
+                val st = names.firstOrNull { it.startsWith("status:") }?.removePrefix("status:") ?: if (o.optString("state") == "open") "new" else "closed"
+                recent.put(JSONObject().put("n", o.optInt("number")).put("title", o.optString("title")).put("state", o.optString("state"))
+                    .put("status", st).put("url", o.optString("html_url")).put("excerpt", Redact.mask(o.optString("body")).take(700)))
+            }
             when {
                 "status:resolved" in names -> resolved++
                 "status:rejected" in names -> rejected++
@@ -133,7 +139,7 @@ object GitHub {
         }
         return out.put("total", total).put("fresh", fresh).put("investigating", investigating).put("awaiting", awaiting)
             .put("approved", approved).put("rejected", rejected).put("resolved", resolved).put("failed", failed)
-            .put("noFix", noFix).put("prs", prs).put("build", build)
+            .put("noFix", noFix).put("issues", recent).put("prs", prs).put("build", build)
             .put("releases", "https://github.com/$repo/releases").put("actions", "https://github.com/$repo/actions")
     }
 

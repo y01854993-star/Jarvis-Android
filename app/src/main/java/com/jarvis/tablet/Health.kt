@@ -29,6 +29,7 @@ object Health {
 
     fun markFail(p: String, e: Exception) {
         if (!ready() || p == "local" || e !is HttpException) return
+        if (e.code == 413) return   // request too large for this provider: not a failure of the provider, the router avoids it by prompt size
         val credit = e.body.contains("credit", true) || e.body.contains("quota", true) ||
             e.body.contains("billing", true) || e.body.contains("insufficient", true)
         val hard = e.code == 401 || e.code == 402 || e.code == 403 || (e.code == 429 && credit)

@@ -45,6 +45,29 @@ class MainActivity : Activity() {
                 val body = if (cmd == "/info") "/info please share more details and the main risks" else cmd
                 return try { if (GitHub.commentIssue(issue, body)) "ok" else "failed" } catch (_: Exception) { "failed" }
             }
+            @JavascriptInterface fun localProblems(): String = try {
+                val arr = org.json.JSONArray()
+                Problems.lines().takeLast(6).reversed().forEach { arr.put(Redact.mask(it).take(300)) }
+                arr.toString()
+            } catch (_: Exception) { "[]" }
+            private fun reply(id: String, result: String) {
+                runOnUiThread { web.evaluateJavascript("window.onBridgeResult&&window.onBridgeResult(${JSONObject.quote(id)},${JSONObject.quote(result)})", null) }
+            }
+            @JavascriptInterface fun diagnoseProblemAsync(id: String, text: String) {
+                Thread { reply(id, Bus.onDiagnose?.invoke(text) ?: "{\"error\":\"engine not ready\"}") }.start()
+            }
+            @JavascriptInterface fun reportProblemToGitHub(id: String, text: String) {
+                Thread {
+                    val ok = try { GitHub.createIssue("Jarvis problem reported from the HUD", "Reported from the HUD.\n\n```\n" + Redact.mask(text).take(1500) + "\n```\n", listOf("jarvis-problem")) } catch (_: Exception) { false }
+                    reply(id, if (ok) "ok" else "failed")
+                }.start()
+            }
+            @JavascriptInterface fun askEngineer(id: String, issue: Int) {
+                Thread {
+                    val ok = try { issue > 0 && GitHub.commentIssue(issue, "/fix") } catch (_: Exception) { false }
+                    reply(id, if (ok) "ok" else "failed")
+                }.start()
+            }
             @JavascriptInterface fun routerStats(): String = try { Usage.dashboard().toString() } catch (_: Exception) { "{}" }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }

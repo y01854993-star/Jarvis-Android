@@ -62,4 +62,15 @@ class RouterTest {
     @Test fun maxAttemptsIsAtLeastOne() {
         assertEquals(1, Router.order(Router.Task.CHAT, null, "auto", all, emptySet(), 0).size)
     }
+
+    @Test fun oversizedPromptsSkipGroq() {
+        val big = Router.order(Router.Task.CHAT, null, "auto", all, emptySet(), 3, 30000)
+        assertTrue("groq" !in big)
+        val small = Router.order(Router.Task.CHAT, null, "auto", all, emptySet(), 5, 5000)
+        assertTrue("groq" in small)
+    }
+
+    @Test fun oversizedPromptStillWorksWhenGroqIsTheOnlyKey() {
+        assertEquals(listOf("groq"), Router.order(Router.Task.CHAT, null, "auto", setOf("groq"), emptySet(), 3, 90000))
+    }
 }

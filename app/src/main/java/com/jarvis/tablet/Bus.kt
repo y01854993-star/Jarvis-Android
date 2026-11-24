@@ -14,6 +14,7 @@ object Bus {
     @Volatile var onTestLocal: (() -> Unit)? = null
     @Volatile var onTestVoice: (() -> Unit)? = null
     @Volatile var onHealth: (() -> Unit)? = null
+    @Volatile var onDiagnose: ((String) -> String)? = null
     @Volatile var onToggleStudy: (() -> Unit)? = null
     @Volatile var onWhatsAppMessage: ((WaMsg) -> Unit)? = null
     @Volatile var cameraResult: ((String?) -> Unit)? = null

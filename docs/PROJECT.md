@@ -12,6 +12,8 @@
 | بوت إصلاح المشاكل | `.github/workflows/autofix.yml` + `.github/autofix/autofix.py` |
 | دليل المشروع | `docs/PROJECT.md` (الملف ده) |
 | المهندس الذاتي (تشخيص + إصلاح + موافقة) | `docs/AUTONOMOUS_ENGINEER.md` |
+| اكتشاف المهارات | `docs/SKILL_HUNTER.md` |
+| تدقيق شامل وحالة المواصفات | `docs/AUDIT.md` |
 
 ## إزاي توصل للـ APK
 - **أي branch غير main:** تبويب *Actions* ← آخر Run ← **Artifacts** ← `jarvis-apk-build-N` (zip فيه الـ APK).

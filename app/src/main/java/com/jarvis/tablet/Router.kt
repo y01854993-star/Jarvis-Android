@@ -41,11 +41,15 @@ object Router {
      * @param available providers that have a key
      * @param disabled  providers in cooldown
      */
-    fun order(task: Task, taskPref: String?, manual: String?, available: Set<String>, disabled: Set<String>, maxAttempts: Int = 3): List<String> {
+    /** approximate request size (characters) each provider can take on a typical free tier; larger requests skip it instead of getting a 413 */
+    val MAX_PROMPT_CHARS = mapOf("groq" to 22000)
+
+    fun order(task: Task, taskPref: String?, manual: String?, available: Set<String>, disabled: Set<String>, maxAttempts: Int = 3, promptChars: Int = 0): List<String> {
         val base = defaultOrder(task)
         val first = listOfNotNull(taskPref?.takeIf { it in PROVIDERS }, manual?.takeIf { it in PROVIDERS })
         val wanted = (first + base).distinct().filter { it in available }
-        val usable = wanted.filter { it !in disabled }.ifEmpty { wanted }
+        val fits = wanted.filter { (MAX_PROMPT_CHARS[it] ?: Int.MAX_VALUE) >= promptChars }.ifEmpty { wanted }
+        val usable = fits.filter { it !in disabled }.ifEmpty { fits }
         return usable.take(maxAttempts.coerceAtLeast(1))
     }
 }
