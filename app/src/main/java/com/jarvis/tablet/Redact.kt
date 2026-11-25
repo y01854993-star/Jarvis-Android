@@ -9,6 +9,15 @@ object Redact {
     private val email = Regex("[\\w.+-]+@[\\w-]+\\.[\\w.]+")
     private val number = Regex("\\+?\\d[\\d\\s-]{6,}\\d")
 
+    private val tokenLike = Regex("^[A-Za-z0-9._\\-+/=]{28,}$")
+
+    /** a single long token with letters and digits, or a known key format: almost certainly an API key typed into the chat by mistake */
+    fun looksLikeSecret(text: String): Boolean {
+        val t = text.trim()
+        if (keyPatterns.any { it.containsMatchIn(t) }) return true
+        return tokenLike.matches(t) && t.any { it.isDigit() } && t.any { it.isLetter() }
+    }
+
     fun mask(s: String): String {
         var r = s
         for (p in keyPatterns) r = p.replace(r, "<key>")

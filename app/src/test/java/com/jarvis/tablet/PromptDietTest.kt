@@ -41,4 +41,12 @@ class PromptDietTest {
         assertTrue(PromptDiet.needsContacts("كلم ماما"))
         assertTrue(PromptDiet.needsContacts("ابعت رسالة لأحمد"))
     }
+
+    @Test fun selfKnowledgeOnlyWhenAskedAboutTheAssistant() {
+        assertTrue(PromptDiet.needsSelf("ايه المميزات الجديدة عندك"))
+        assertTrue(PromptDiet.needsSelf("what can you do"))
+        assertFalse(PromptDiet.needsSelf("افتح يوتيوب"))
+        assertFalse(PromptDiet.needsSelf(""))
+        assertTrue(PromptDiet.SELF_KNOWLEDGE.contains("لسه مش متاح"))
+    }
 }

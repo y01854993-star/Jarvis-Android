@@ -130,7 +130,11 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
             if (status == TextToSpeech.SUCCESS) { ttsReady = true; checkArabicVoice() }
             else Bus.say("err", "محرك الصوت (TTS) مش شغال على الجهاز")
         }
-        Bus.onText = { t -> scope.launch(Dispatchers.Default) { handle(t) } }
+        Bus.onText = { t ->
+            if (Redact.looksLikeSecret(t)) {
+                Bus.say("j", "ده شكله مفتاح سري. مش هبعته لأي موديل ومش هحفظه. حطّه من الإعدادات، وبعد كده غيّره من موقع المزود لأنه اتكتب هنا.")
+            } else scope.launch(Dispatchers.Default) { handle(t) }
+        }
         Bus.onToggle = { _ -> bubbleTap() }
         Bus.onTestLocal = { scope.launch(Dispatchers.IO) { testLocalServer() } }
         Bus.onHealth = { scope.launch(Dispatchers.IO) { healthCheck() } }
@@ -884,10 +888,15 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     } catch (_: Exception) { -1 }
 
     private fun langDirective(): String = if (Config.sttLang().startsWith("en"))
-        "LANGUAGE: The user selected English. Speak and reply ONLY in English, short and natural, and write any summary in English. The assistant's name is Jarvis."
-    else "اللغة: المستخدم اختار العربي. رد بالعربي المصري العامي وأي ملخص يكون بالعربي. اسمك جارفيس (Jarvis)."
+        "LANGUAGE: The user selected English. Speak and reply ONLY in English. Be direct and natural, in short sentences (one or two). Write any summary in English. " +
+            "For screen or camera analysis give a direct, brief answer focused on the visual context. The assistant's name is Jarvis. Never claim abilities that are not in your capabilities."
+    else "اللغة: المستخدم اختار العربي. رد بالعربي المصري العامي، مباشر وطبيعي، بجمل قصيرة (جملة أو اتنين). " +
+        (if (Keys.tashkeel) "اكتب الكلام العربي بالتشكيل الكامل (فتحة وضمة وكسرة وسكون وشدة وتنوين) عشان النطق يطلع صح، في حقلي reply و speak. " else "") +
+        "تحليل الشاشة والكاميرا يكون مباشر وموجز ويركز على السياق البصري. أي ملخص بالعربي. اسمك جارفيس (Jarvis). " +
+        "ما تدّعيش قدرة مش موجودة في قدراتك (إدارة المنزل الذكي والتحكم في اللابتوب لسه مش متاحين)."
 
-    private fun systemPrompt(audioMode: Boolean, userText: String = ""): String = langDirective() + "\n" + PromptDiet.strip(systemPromptBase(audioMode, userText), userText)
+    private fun systemPrompt(audioMode: Boolean, userText: String = ""): String = langDirective() + "\n" + PromptDiet.strip(systemPromptBase(audioMode, userText), userText) +
+        (if (PromptDiet.needsSelf(userText)) "\n" + PromptDiet.SELF_KNOWLEDGE else "")
 
     private fun systemPromptBase(audioMode: Boolean, userText: String): String {
         val names = if (PromptDiet.needsContacts(userText)) contactNames() else ""
@@ -1170,7 +1179,8 @@ $extraRules
         val task = Router.classify(text)
         val cloud = if (Keys.localOn && Keys.localOnly) emptyList() else Router.order(
             task, Keys.routePref(task.name.lowercase()), Config.brain(), availableProviders(),
-            Router.PROVIDERS.filter { Health.isDisabled(it) }.toSet(), 3, sys.length + user.length)
+            Router.PROVIDERS.filter { Health.isDisabled(it) }.toSet(), 3,
+            sys.length + user.length + history.toList().takeLast(12).sumOf { it.first.length + it.second.length })
         val cands = (if (Keys.localOn) listOf("local") else emptyList()) + cloud
         for (p in cands) {
             val t0 = System.currentTimeMillis()
@@ -1222,14 +1232,14 @@ $extraRules
 
     private fun geminiCall(body: JSONObject, models: List<String>? = null): String {
         var last: HttpException? = null
-        val list = (models ?: listOf(Config.model(), "gemini-flash-latest")).distinct()
+        val list = (models ?: listOf(Config.model(), "gemini-flash-latest", "gemini-2.5-flash-lite")).distinct()
         for ((i, m) in list.withIndex()) {
             try {
                 return postJson("https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent",
                     mapOf("x-goog-api-key" to Keys.gemini), withoutThinking(body, m))
             } catch (e: HttpException) {
                 last = e
-                val retry = e.code == 400 || e.code == 404 || (e.code == 429 && i < list.size - 1)
+                val retry = e.code == 400 || e.code == 404 || ((e.code == 429 || e.code == 500 || e.code == 503) && i < list.size - 1)
                 if (!retry) throw e
             }
         }
@@ -1300,8 +1310,37 @@ $extraRules
         throw NoKeyException()
     }
 
-    private fun openAiChat(url: String, key: String, models: List<String>, sys: String, user: String, withHistory: Boolean = true, imageB64: String? = null): JSONObject {
+    private val catalogCache = HashMap<String, Pair<Long, List<String>>>()
+
+    private fun catalogIds(modelsUrl: String, key: String): List<String>? {
+        val c = synchronized(catalogCache) { catalogCache[modelsUrl] }
+        if (c != null && System.currentTimeMillis() - c.first < 6 * 3600_000L) return c.second
+        return try {
+            val arr = JSONObject(getText(modelsUrl, mapOf("Authorization" to "Bearer $key"))).optJSONArray("data") ?: return null
+            val ids = (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.filter { it.isNotBlank() }
+            synchronized(catalogCache) { catalogCache[modelsUrl] = System.currentTimeMillis() to ids }
+            ids
+        } catch (_: Exception) { null }
+    }
+
+    /** keeps the configured model names that really exist at the provider; otherwise picks a working one (no more endless 404) */
+    private fun resolveModels(url: String, key: String, configured: List<String>, vision: Boolean): List<String> {
+        val avail = catalogIds(url.removeSuffix("/chat/completions") + "/models", key) ?: return configured
+        val host = try { URL(url).host } catch (_: Exception) { "" }
+        val (pref, pat) = when {
+            host.contains("groq") && vision -> listOf("meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct") to Regex("llama-4|vision|scout|maverick", RegexOption.IGNORE_CASE)
+            host.contains("groq") -> listOf("llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant") to Regex("llama-3\\.\\d-(70b|8b)", RegexOption.IGNORE_CASE)
+            host.contains("openai") -> listOf("gpt-4o", "gpt-4o-mini") to Regex("^gpt-4", RegexOption.IGNORE_CASE)
+            host.contains("deepseek") -> listOf("deepseek-chat") to Regex("deepseek-(chat|v)", RegexOption.IGNORE_CASE)
+            host.contains("moonshot") -> listOf("kimi-k2-0905-preview", "kimi-k2-turbo-preview") to Regex("kimi-k2", RegexOption.IGNORE_CASE)
+            else -> emptyList<String>() to null
+        }
+        return ModelPick.choose(avail, configured, pref, pat).ifEmpty { configured }
+    }
+
+    private fun openAiChat(url: String, key: String, modelsIn: List<String>, sys: String, user: String, withHistory: Boolean = true, imageB64: String? = null): JSONObject {
         var last: HttpException? = null
+        val models = resolveModels(url, key, modelsIn, imageB64 != null)
         for (m in models) {
             try {
                 val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
@@ -1440,6 +1479,7 @@ $extraRules
                 if (n <= 0) break
                 val chunk = frame.copyOf(n)
                 val lvl = rms(chunk)
+                Bus.level(lvl / 5000.0)
                 frames++
                 if (chunk.all { it.toInt() == 0 }) zeroRun++ else zeroRun = 0
                 if (zeroRun >= 10) { blocked = true; break }
@@ -1902,7 +1942,7 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
 
     /** answers a question about a phone screenshot */
     private fun visionAsk(question: String, img: String, lang: String, screenText: String = "", kind: String = "phone screenshot"): String {
-        val sys = "You look at a $kind and answer the user's question about it accurately and concisely (1-4 short spoken sentences), in the user's language. No markdown, no lists, no symbols."
+        val sys = langDirective() + "\nYou look at a $kind and answer the user's question about it accurately and concisely (1-3 short spoken sentences), focusing on the visual context, in the user's language. No markdown, no lists, no symbols."
         val errs = ArrayList<String>()
         val ask = "$question\n[$lang]" +
             (if (screenText.isNotBlank()) "\nSCREEN ELEMENTS (exact text read from the screen):\n${screenText.take(5000)}" else "")
@@ -3088,7 +3128,18 @@ ${if (rel.isNotEmpty()) "من الذاكرة: $rel" else ""}
             val total = p.samples.size
             val deadline = System.currentTimeMillis() + total * 1000L / p.rate + 2500
             while (t.playState == AudioTrack.PLAYSTATE_PLAYING &&
-                t.playbackHeadPosition < total && System.currentTimeMillis() < deadline) delay(40)
+                t.playbackHeadPosition < total && System.currentTimeMillis() < deadline) {
+                val pos = t.playbackHeadPosition
+                val from = (pos - 400).coerceAtLeast(0)
+                val to = (pos + 400).coerceAtMost(total)
+                if (to > from) {
+                    var sum = 0.0
+                    for (i in from until to) sum += p.samples[i].toDouble() * p.samples[i].toDouble()
+                    Bus.level(Math.sqrt(sum / (to - from)) / 9000.0)
+                }
+                delay(40)
+            }
+            Bus.level(0.0)
         } finally {
             try { t.stop() } catch (_: Exception) {}
             t.release()

@@ -63,6 +63,8 @@ object Keys {
     val wakeOn: Boolean get() = sp.getBoolean("wake", false)
     val wakeLocal: Boolean get() = sp.getBoolean("wakelocal", true)
     val autoReport: Boolean get() = sp.getBoolean("autoreport", true)
+    /** Arabic replies with full diacritics so the voice pronounces them correctly */
+    val tashkeel: Boolean get() = if (::sp.isInitialized) sp.getBoolean("tashkeel", true) else true
     /** repo that receives problem reports (and runs the autofix workflow); separate from the memory repo */
     val fixRepo: String get() = (sp.getString("fixrepo", null) ?: "").takeIf { it.contains("/") } ?: "y01854993-star/Jarvis-Android"
     fun routePref(task: String): String? = if (::sp.isInitialized) sp.getString("route_$task", null)?.takeIf { it.isNotBlank() } else null

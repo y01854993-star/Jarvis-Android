@@ -29,6 +29,16 @@ object Bus {
         overlay?.invoke(s)
     }
 
+    private var lastLevelAt = 0L
+
+    /** real audio level (0..1) for the HUD core: microphone while listening, speech output while speaking. Not forwarded to the floating bubble. */
+    fun level(v: Double) {
+        val now = System.currentTimeMillis()
+        if (now - lastLevelAt < 70) return
+        lastLevelAt = now
+        sink?.invoke("{\"type\":\"level\",\"v\":${"%.3f".format(Locale.US, v.coerceIn(0.0, 1.0))}}")
+    }
+
     fun log(text: String) {
         val line = "[${fmt.format(Date())}] $text"
         android.util.Log.d("Jarvis", line)

@@ -113,6 +113,7 @@
     if (m.type === "say" && window.addLog) addLog(m.c, m.t);
     else if (m.type === "log" && window.addLog) addLog("", m.text);
     else if (m.type === "state" && window.setState) setState(m.c, m.t);
+    else if (m.type === "level") { if (window.coreLevel) coreLevel(m.v); }
     else if (m.type === "status") { const n = $("micNote"); if (n) n.textContent = m.call || ""; }
     else if (m.type === "health") { const v = $("vAi"); if (v) v.textContent = m.text; const r = $("rAi"); if (r) r.className = m.ready > 0 ? "row on" : "row"; }
   };
