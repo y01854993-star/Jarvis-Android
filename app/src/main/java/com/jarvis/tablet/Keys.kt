@@ -63,6 +63,15 @@ object Keys {
     val wakeOn: Boolean get() = sp.getBoolean("wake", false)
     val wakeLocal: Boolean get() = sp.getBoolean("wakelocal", true)
     val autoReport: Boolean get() = sp.getBoolean("autoreport", true)
+    /** open-source vision-language model on the user's own server (OpenAI-compatible API); empty = use the cloud router */
+    val vlmUrl: String get() = if (::sp.isInitialized) sp.getString("vlm_url", "") ?: "" else ""
+    val vlmModel: String get() = if (::sp.isInitialized) (sp.getString("vlm_model", "") ?: "").ifBlank { "smolvlm2" } else "smolvlm2"
+    val vlmKey: String get() = if (::sp.isInitialized) sp.getString("vlm_key", "") ?: "" else ""
+    fun setVlm(url: String, model: String) { if (::sp.isInitialized) sp.edit().putString("vlm_url", url).putString("vlm_model", model).apply() }
+    /** opt-in recording of agent steps (and optionally screenshots) as training data; stays on the phone until exported */
+    val collectTraj: Boolean get() = if (::sp.isInitialized) sp.getBoolean("collect_traj", false) else false
+    val collectFrames: Boolean get() = if (::sp.isInitialized) sp.getBoolean("collect_frames", false) else false
+    fun setCollect(on: Boolean, frames: Boolean) { if (::sp.isInitialized) sp.edit().putBoolean("collect_traj", on).putBoolean("collect_frames", on && frames).apply() }
     /** Arabic replies with full diacritics so the voice pronounces them correctly */
     val tashkeel: Boolean get() = if (::sp.isInitialized) sp.getBoolean("tashkeel", true) else true
     /** repo that receives problem reports (and runs the autofix workflow); separate from the memory repo */

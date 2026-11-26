@@ -1,0 +1,17 @@
+name: Training toolkit tests
+on:
+  push:
+    paths:
+      - "training/**"
+  pull_request:
+    paths:
+      - "training/**"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (data preparation, evaluation)
+        run: python3 -m unittest discover -s training/tests -v

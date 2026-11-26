@@ -15,6 +15,8 @@
 | اكتشاف المهارات | `docs/SKILL_HUNTER.md` |
 | تدقيق شامل وحالة المواصفات | `docs/AUDIT.md` |
 | اقتراحات مشاريع GitHub (بيانات حقيقية) | `docs/SUGGESTIONS.md` |
+| **المعمارية (Clean Architecture + الرؤية + التدريب)** | `docs/ARCHITECTURE.md` |
+| تدريب موديل الرؤية | `training/README.md` |
 
 ## إزاي توصل للـ APK
 - **أي branch غير main:** تبويب *Actions* ← آخر Run ← **Artifacts** ← `jarvis-apk-build-N` (zip فيه الـ APK).

@@ -6,7 +6,7 @@ package com.jarvis.tablet
  */
 object PromptDiet {
     /** developer-only actions: only described to the model when the request is about them */
-    val ADVANCED = listOf("fixes_list", "fixes_apply", "skills_list", "skills_hunt", "skills_decide", "router_status", "route_set", "diagnose", "selftest")
+    val ADVANCED = listOf("fixes_list", "fixes_apply", "skills_list", "skills_hunt", "skills_decide", "router_status", "route_set", "diagnose", "selftest", "vlm_set", "dataset_collect", "dataset_export")
 
     private val advancedWords = Regex("(fix|إصلاح|اصلاح|مهار|skill|موديل|model|route|router|تشخيص|diagnos|المشاكل|مشكلة|درّب|درب|selftest|اكتشف|discover|مقترح|pull|ادمج)", RegexOption.IGNORE_CASE)
     private val appWords = Regex("(افتح|شغل|شغّل|اقفل|open|launch|start|تطبيق|app|يوتيوب|youtube|واتساب|whatsapp|تليجرام|telegram|كروم|chrome|اعدادات|إعدادات|settings|سبوتيفاي|spotify|انغامي|أنغامي)", RegexOption.IGNORE_CASE)
@@ -19,7 +19,7 @@ object PromptDiet {
     val SELF_KNOWLEDGE = """
 معلومات حقيقية عن نفسك. ما تقولش حاجة عن نفسك غير اللي هنا، ولو سُئلت عن حاجة مش هنا قول إنك مش متأكد:
 - بتتحكم في الموبايل زي إيد بشرية عن طريق خدمة الوصول: ضغط وكتابة وسحب وزووم وفتح أي تطبيق وخطوات متعددة.
-- بتشوف الشاشة والكاميرا، وبتعمل مكالمات ورسايل واتساب بتأكيد صوتي، ووضع المذاكرة بيرد على المكالمات وواتساب.
+- بتشوف الشاشة والكاميرا، وبتراقب الشاشة عدة ثواني وتفهم اللي حصل بالترتيب، وبتقدر تستخدم موديل رؤية مفتوح المصدر على سيرفر صاحبك، وبتعمل مكالمات ورسايل واتساب بتأكيد صوتي، ووضع المذاكرة بيرد على المكالمات وواتساب.
 - ذاكرة مشفّرة بتتزامن على GitHub، ومنبهات ومؤقتات وتقويم.
 - راوتر موديلات: بيستخدم موديل واحد في كل طلب حسب نوع المهمة وبيحوّل للتالي لو فشل.
 - مهندس آلي بيقرأ تقارير المشاكل ويقترح إصلاحات بتستنى موافقة صاحبك، وصائد مهارات بيدوّر على GitHub ويقترح بس.

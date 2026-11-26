@@ -93,6 +93,15 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
     @Volatile private var agentSummary: String? = null
     private var studyEndJob: kotlinx.coroutines.Job? = null
     private var crashHandlerInstalled = false
+
+    /** vision slice built with the clean-architecture layers (domain / data); see docs/ARCHITECTURE.md */
+    private val vision by lazy {
+        VisionModule(ctx, { screenshotB64() }) { jpeg, prompt ->
+            withContext(Dispatchers.IO) {
+                visionAsk(prompt, android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP), langNote(prompt), "", "sequence of phone screenshots in time order")
+            }
+        }
+    }
     @Volatile private var lastToolResult = ""
     private var summarizing = false
     private var recordingName = ""
@@ -449,7 +458,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
 
     /** returns an error sentence, or null when OK */
     private suspend fun runAction(a: JSONObject): String? {
-        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "fixes_apply", "skills_decide", "autoreply_set", "study_mode", "voice_message", "sms", "call",
+        if (!Keys.isUnlocked() && a.optString("type") in setOf("agent", "selftest", "fixes_apply", "skills_decide", "vlm_set", "dataset_export", "autoreply_set", "study_mode", "voice_message", "sms", "call",
                 "whatsapp", "whatsapp_group", "handoff", "github_save", "run_macro", "teach_start", "close_app", "youtube_play_channel")) {
             return "الميزة دي مقفولة. افتح التطبيق وادوس UNLOCK"
         }
@@ -646,6 +655,40 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
                 else {
                     val ok = kotlinx.coroutines.withContext(Dispatchers.IO) { GitHub.commentIssue(num, "/$dec") }
                     agentSummary = if (ok) "بعتّ القرار ($dec). هيتجهز branch و Pull Request، ومحدّش بيدمج غيرك" else "معرفتش أبعت القرار"
+                    null
+                }
+            }
+            "watch_screen" -> {
+                val secs = a.optInt("seconds", 6).coerceIn(2, 20)
+                val q = a.optString("question").ifBlank { "إيه اللي حصل على الشاشة بالترتيب؟" }
+                if (JarvisAccessibility.instance == null) a11yHelp()
+                else if (!Keys.hasCloud() && Keys.vlmUrl.isBlank()) "المراقبة محتاجة موديل رؤية: مفتاح سحابي أو موديل مفتوح المصدر على سيرفرك"
+                else {
+                    val res = try { vision.watchSequence().invoke(secs, 1000L, q) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                    if (res == null) "معرفتش أراقب الشاشة دلوقتي" else { agentSummary = res.text; null }
+                }
+            }
+            "vlm_set" -> {
+                val url = a.optString("url").trim()
+                if (url.isEmpty()) { Keys.setVlm("", ""); agentSummary = "رجّعت موديل الرؤية للسحابة"; null }
+                else if (!com.jarvis.tablet.domain.vision.VlmEndpointPolicy.isAllowed(url)) "العنوان ده مش آمن لشاشتك: لازم https أو عنوان على شبكتك الخاصة"
+                else { Keys.setVlm(url, a.optString("model", "smolvlm2").ifBlank { "smolvlm2" }); agentSummary = "تمام، موديل الرؤية بقى على $url"; null }
+            }
+            "dataset_collect" -> {
+                val on = a.optBoolean("on", true)
+                Keys.setCollect(on, a.optBoolean("frames", false))
+                agentSummary = if (on) "بدأت أسجّل خطوات الـ Agent للتدريب. البيانات على موبايلك ومقنّعة" else "وقفت تسجيل بيانات التدريب"
+                null
+            }
+            "dataset_export" -> {
+                val n = vision.trajectories.steps()
+                if (n == 0) "مفيش بيانات مسجلة"
+                else if (!GitHub.configured()) "محتاج توكن وريبو GitHub في الإعدادات"
+                else if (!confirmAction("Upload $n recorded agent steps to your memory repo on GitHub. Go ahead, Boss?")) "تمام، الغيتها"
+                else {
+                    val name = "datasets/trajectories-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) + ".jsonl"
+                    val ok = withContext(Dispatchers.IO) { GitHub.write(name, vision.trajectories.readAll(), "dataset export") }
+                    agentSummary = if (ok) "رفعت $n خطوة للتدريب" else "الرفع فشل"
                     null
                 }
             }
@@ -994,6 +1037,10 @@ $extraRules
 - {"type":"skills_list"}: يقول ملخص اكتشاف المهارات الجديدة (كام مشروع اتلقى، كام مستني موافقة، أحسن مقترحات)
 - {"type":"skills_hunt","mode":"light|deep"}: يبدأ بحث على GitHub عن مهارات ومكتبات جديدة تفيد جارفيس. البحث بس، مفيش تثبيت
 - {"type":"skills_decide","issue":N,"decision":"approve|reject|test"}: يبعت قرار المستخدم على مقترح مهارة (بعد تأكيد صوتي). approve بيجهّز branch و Pull Request ومفيش دمج من غير المستخدم
+- {"type":"watch_screen","seconds":6,"question":"..."}: يراقب الشاشة عدة ثواني، ياخد اللقطات المهمة بس، ويفهم اللي حصل بالترتيب ويجاوب عن سؤال. للأسئلة زي "راقب الشاشة وقولي إيه اللي بيحصل" أو "إيه اللي حصل بعد ما دوست؟". المتابعة بتفتكر اللي شافه قبل كده
+- {"type":"vlm_set","url":"http://192.168.1.5:8000/v1","model":"smolvlm2"}: يوجّه الرؤية لموديل مفتوح المصدر على سيرفر المستخدم (واجهة OpenAI). https أو شبكة خاصة بس. url فاضي يرجّع للسحابة
+- {"type":"dataset_collect","on":true,"frames":false}: يبدأ أو يوقف تسجيل خطوات الـ Agent (بيانات تدريب محلية ومقنّعة). frames:true يحفظ كمان لقطات الشاشة
+- {"type":"dataset_export"}: يرفع بيانات التدريب المسجلة لريبو الذاكرة على GitHub بعد تأكيد صوتي
 - {"type":"router_status"}: يقول إحصائيات الموديلات (عدد الطلبات والأخطاء وأي موديل موقوف مؤقتاً) والاختيار الحالي
 - {"type":"route_set","task":"all|chat|coding|reasoning|translation|summarization|planning|android_control|vision","provider":"auto|gemini|groq|deepseek|openai|kimi"}: يغيّر الموديل المفضل لنوع مهمة أو للكل. auto يرجّع الاختيار التلقائي. التطبيق بيستخدم موديل واحد في كل طلب وبيحوّل للتالي بس لو فشل
 - {"type":"diagnose"}: يفحص الصلاحيات والخدمات والمفاتيح والإنترنت ويقولك إيه الناقص، ويسجل المشاكل في ملف المشاكل. استخدمه لما المستخدم يقول شوف المشاكل أو إيه اللي مش شغال
@@ -1785,6 +1832,7 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
         if (goal.isBlank()) return AgentResult(false, "مفهمتش المطلوب")
         if (!Keys.hasCloud() || !isOnline()) return AgentResult(false, "التحكم في الشاشة محتاج إنترنت ومفتاح سحابي (Gemini مثلا). المحرك المحلي لوحده مش بيشوف الشاشة")
         val steps = ArrayList<String>()
+        val episodeId = "e" + System.currentTimeMillis()
         val lang = langNote(goal)
         var lastFailed = false
         var prevSig = 0
@@ -1883,6 +1931,13 @@ APP HINTS (general knowledge, screens vary by version; always trust CURRENT SCRE
                     else -> traceStep(act, node, res.optString("app"), res.optString("direction", "up"))
                 }
             )
+            if (Keys.collectTraj) {
+                try {
+                    vision.trajectories.record(
+                        com.jarvis.tablet.domain.vision.TrajectoryStep(episodeId, i, Redact.mask(goal).take(200), act, Redact.mask(text).take(40), ok, sig.toLong(), null, System.currentTimeMillis()),
+                        if (Keys.collectFrames) img else null)
+                } catch (_: Exception) {}
+            }
             lastFailed = !ok
             prevSig = sig
             prevSigValid = true
