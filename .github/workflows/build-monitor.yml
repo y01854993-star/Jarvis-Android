@@ -1,0 +1,48 @@
+name: Build monitor
+# Opens a problem report when the build fails and hands it to the autofix engineer; weekly it re-checks reports nobody processed.
+on:
+  workflow_run:
+    workflows: ["Build APK"]
+    types: [completed]
+  schedule:
+    - cron: "0 6 * * 1"
+permissions:
+  contents: read
+  issues: write
+  actions: write
+jobs:
+  report-failure:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' && !startsWith(github.event.workflow_run.head_branch, 'autofix/')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Open a build-failure report
+        run: |
+          SHORT="${SHA:0:7}"
+          EXIST=$(gh issue list --state all --search "Build failed $SHORT in:title" --json number -q 'length')
+          if [ "$EXIST" != "0" ]; then echo "already reported"; exit 0; fi
+          LOG=$(gh run view "$RUN_ID" --log-failed 2>/dev/null | tail -n 60 | sed -E 's/(ghp_|github_pat_|AIza|sk-|gsk_)[A-Za-z0-9_-]+/<redacted>/g' || true)
+          { printf 'Automatic report: the Build APK workflow failed.\n\nBranch: `%s`  Commit: `%s`\n\n```\n%s\n```\n' "$BRANCH" "$SHORT" "$LOG"; } > body.md
+          gh label create jarvis-problem --force >/dev/null 2>&1 || true
+          gh label create jarvis-build --force >/dev/null 2>&1 || true
+          URL=$(gh issue create --title "Build failed $SHORT on $BRANCH" --label jarvis-problem --label jarvis-build --body-file body.md)
+          NUM="${URL##*/}"
+          gh workflow run autofix.yml -f issue_number="$NUM" || true
+  weekly-recheck:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Re-run the engineer on reports without a status
+        run: |
+          gh issue list --label jarvis-problem --state open --limit 30 --json number,labels \
+            -q '.[] | select(([.labels[].name | startswith("status:")] | any) | not) | .number' | while read -r n; do
+              [ -n "$n" ] && gh workflow run autofix.yml -f issue_number="$n" || true
+            done

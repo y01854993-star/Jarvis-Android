@@ -1,0 +1,103 @@
+{
+ "note": "Audit of the existing JARVIS app. The gap analysis compares every candidate against this list.",
+ "capabilities": [
+  {
+   "id": "agent_loop",
+   "name": "Multi-step phone agent",
+   "has": true,
+   "detail": "Up to 30 steps, reads screen tree and screenshot, stuck and unchanged-screen detection, ambiguity questions",
+   "limits": "Depends on a cloud vision model"
+  },
+  {
+   "id": "accessibility_control",
+   "name": "Accessibility control",
+   "has": true,
+   "detail": "click, long click, type, scroll, drag, pinch, coordinate taps, paste, enter, global actions, deep links",
+   "limits": "Cannot touch protected system screens"
+  },
+  {
+   "id": "wake_word",
+   "name": "Wake word",
+   "has": true,
+   "detail": "Name detection through speech recognition (on-device on Android 13+)",
+   "limits": "No trained keyword model, not as battery-efficient as a dedicated engine"
+  },
+  {
+   "id": "stt",
+   "name": "Speech to text",
+   "has": true,
+   "detail": "Cloud (Groq, Gemini, OpenAI) and Android on-device SpeechRecognizer",
+   "limits": "Egyptian Arabic accuracy depends on the provider"
+  },
+  {
+   "id": "tts",
+   "name": "Text to speech",
+   "has": true,
+   "detail": "Cloud voice (Fish Audio) and system TTS",
+   "limits": "Natural Egyptian Arabic voice is limited"
+  },
+  {
+   "id": "vision",
+   "name": "Screen and camera understanding",
+   "has": true,
+   "detail": "Screenshots and camera frames sent to a multimodal model",
+   "limits": "No dedicated offline OCR"
+  },
+  {
+   "id": "ocr",
+   "name": "Dedicated OCR",
+   "has": false,
+   "detail": "",
+   "limits": "Relies on accessibility text and a cloud vision model"
+  },
+  {
+   "id": "memory",
+   "name": "Long-term memory",
+   "has": true,
+   "detail": "Encrypted JSON store, embeddings search, summaries, learned skills and macros, GitHub sync and restore",
+   "limits": "Simple retrieval, no knowledge graph"
+  },
+  {
+   "id": "model_routing",
+   "name": "Model routing",
+   "has": true,
+   "detail": "Sequential provider fallback with cooldowns (Gemini, Groq, OpenAI, DeepSeek, Kimi, local server, FreeLLMAPI)",
+   "limits": "No cost or latency aware routing"
+  },
+  {
+   "id": "offline_llm",
+   "name": "Offline LLM",
+   "has": false,
+   "detail": "Only an external llama.cpp server URL",
+   "limits": "No on-device inference inside the app"
+  },
+  {
+   "id": "study_mode",
+   "name": "Study mode and auto reply",
+   "has": true,
+   "detail": "Calls and WhatsApp replies, per-contact styles, urgent detection",
+   "limits": "Voice notes cannot be heard"
+  },
+  {
+   "id": "security_storage",
+   "name": "Secure storage and locks",
+   "has": true,
+   "detail": "Android Keystore encryption, device credential lock, wipe",
+   "limits": ""
+  },
+  {
+   "id": "self_healing",
+   "name": "Autonomous engineer",
+   "has": true,
+   "detail": "Problem reports, diagnosis, fix branch, tests, pull request for approval",
+   "limits": "Needs a model key"
+  },
+  {
+   "id": "rag",
+   "name": "Retrieval over documents",
+   "has": false,
+   "detail": "",
+   "limits": "Embeddings only over the assistant's own memory"
+  }
+ ]
+}

@@ -1,0 +1,32 @@
+name: Fix status
+# Keeps the issue labels in sync with the decision made on the autofix pull request.
+on:
+  pull_request:
+    types: [closed]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  status:
+    if: startsWith(github.event.pull_request.head.ref, 'autofix/')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      MERGED: ${{ github.event.pull_request.merged }}
+    steps:
+      - name: Update issue status
+        run: |
+          N="${HEAD_REF#autofix/issue-}"
+          case "$N" in ''|*[!0-9]*) exit 0;; esac
+          gh label create status:resolved --force >/dev/null 2>&1 || true
+          gh label create status:rejected --force >/dev/null 2>&1 || true
+          gh issue edit "$N" --remove-label status:awaiting-approval >/dev/null 2>&1 || true
+          if [ "$MERGED" = "true" ]; then
+            gh issue edit "$N" --add-label status:resolved || true
+            gh issue comment "$N" --body "Fix approved and merged. The stable APK is rebuilding from main."
+          else
+            gh issue edit "$N" --add-label status:rejected || true
+            gh issue comment "$N" --body "Fix closed without merging. Comment /fix with a note to ask for another attempt."
+          fi

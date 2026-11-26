@@ -61,6 +61,27 @@ object Keys {
     val sttDevice: Boolean get() = sp.getBoolean("sttdev", false)
     val localUrl: String get() = (sp.getString("localurl", "") ?: "").ifBlank { "http://127.0.0.1:8080/v1" }
     val wakeOn: Boolean get() = sp.getBoolean("wake", false)
+    val wakeLocal: Boolean get() = sp.getBoolean("wakelocal", true)
+    val autoReport: Boolean get() = sp.getBoolean("autoreport", true)
+    /** open-source vision-language model on the user's own server (OpenAI-compatible API); empty = use the cloud router */
+    val vlmUrl: String get() = if (::sp.isInitialized) sp.getString("vlm_url", "") ?: "" else ""
+    val vlmModel: String get() = if (::sp.isInitialized) (sp.getString("vlm_model", "") ?: "").ifBlank { "smolvlm2" } else "smolvlm2"
+    val vlmKey: String get() = if (::sp.isInitialized) sp.getString("vlm_key", "") ?: "" else ""
+    fun setVlm(url: String, model: String) { if (::sp.isInitialized) sp.edit().putString("vlm_url", url).putString("vlm_model", model).apply() }
+    /** opt-in recording of agent steps (and optionally screenshots) as training data; stays on the phone until exported */
+    val collectTraj: Boolean get() = if (::sp.isInitialized) sp.getBoolean("collect_traj", false) else false
+    val collectFrames: Boolean get() = if (::sp.isInitialized) sp.getBoolean("collect_frames", false) else false
+    fun setCollect(on: Boolean, frames: Boolean) { if (::sp.isInitialized) sp.edit().putBoolean("collect_traj", on).putBoolean("collect_frames", on && frames).apply() }
+    /** Arabic replies with full diacritics so the voice pronounces them correctly */
+    val tashkeel: Boolean get() = if (::sp.isInitialized) sp.getBoolean("tashkeel", true) else true
+    /** repo that receives problem reports (and runs the autofix workflow); separate from the memory repo */
+    val fixRepo: String get() = (sp.getString("fixrepo", null) ?: "").takeIf { it.contains("/") } ?: "y01854993-star/Jarvis-Android"
+    fun routePref(task: String): String? = if (::sp.isInitialized) sp.getString("route_$task", null)?.takeIf { it.isNotBlank() } else null
+    fun setRoutePref(task: String, provider: String) { if (::sp.isInitialized) sp.edit().putString("route_$task", provider).apply() }
+    fun brainOrNull(): String? = if (::sp.isInitialized) sp.getString("brain_override", null)?.takeIf { it.isNotBlank() } else null
+    fun setBrain(b: String) { if (::sp.isInitialized) sp.edit().putString("brain_override", if (b == "auto") "" else b).apply() }
+    fun langOrNull(): String? = if (::sp.isInitialized) sp.getString("lang", null) else null
+    fun setLang(l: String) { if (::sp.isInitialized && (l == "ar-EG" || l == "en-US")) sp.edit().putString("lang", l).apply() }
     val perf: String get() = sp.getString("perf", "balanced") ?: "balanced"
     val ttsSpeed: Float get() = sp.getFloat("speed", 1.0f)
     val ttsPitch: Float get() = sp.getFloat("pitch", 1.0f)
@@ -73,6 +94,7 @@ object Keys {
 
     fun studyActive(): Boolean =
         ::sp.isInitialized && sp.getBoolean("study", false) && System.currentTimeMillis() < sp.getLong("studyuntil", 0L)
+    fun studyUntil(): Long = if (::sp.isInitialized) sp.getLong("studyuntil", 0L) else 0L
     fun setStudy(on: Boolean, until: Long) { sp.edit().putBoolean("study", on).putLong("studyuntil", until).apply() }
     fun setTone(t: String) { sp.edit().putString("tone", t).apply() }
 

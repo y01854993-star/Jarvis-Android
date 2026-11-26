@@ -330,10 +330,41 @@ object Brain {
     fun addSkill(goal: String, steps: List<String>, ok: Boolean, note: String) {
         if (steps.isEmpty()) return
         val a = arr("skills")
+        // one entry per (goal, outcome): a newer run replaces the older one instead of filling the 100 slots with repeats
+        val key = norm(goal.take(160))
+        var i = a.length() - 1
+        while (i >= 0) {
+            val o = a.optJSONObject(i)
+            if (o != null && norm(o.optString("g")) == key && o.optBoolean("ok") == ok) a.remove(i)
+            i--
+        }
         a.put(JSONObject().put("g", goal.take(160)).put("st", JSONArray(steps.take(30)))
             .put("ok", ok).put("n", note.take(160)).put("ts", System.currentTimeMillis()))
         cap(a, 100); save()
     }
+
+    @Synchronized
+    fun isBlank(): Boolean = arr("facts").length() == 0 && arr("notes").length() == 0 && arr("rules").length() == 0 &&
+        arr("skills").length() == 0 && arr("sums").length() == 0
+
+    /** replaces an empty local brain with a copy that was synced to GitHub (fresh install / cleared data) */
+    @Synchronized
+    fun restoreFrom(json: String): Boolean = try {
+        val o = JSONObject(json)
+        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros")) if (!o.has(k)) o.put(k, JSONArray())
+        if (!o.has("projects")) o.put("projects", JSONObject())
+        o.put("migrated", true)
+        data = o
+        for (k in listOf("facts", "notes", "sums")) {
+            val arrK = o.getJSONArray(k)
+            for (i in 0 until arrK.length()) {
+                val x = arrK.getJSONObject(i)
+                if (!x.has("id")) x.put("id", ++idc) else idc = maxOf(idc, x.optLong("id"))
+            }
+        }
+        save()
+        true
+    } catch (_: Exception) { false }
 
     @Synchronized
     fun skillsFor(goal: String, limit: Int): List<String> {

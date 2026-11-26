@@ -60,22 +60,22 @@ object AutoReply {
 
     @Synchronized
     fun shouldReply(sender: String, text: String, group: Boolean, study: Boolean): Boolean {
-        if (!enabled()) return false
+        if (!::sp.isInitialized || (!enabled() && !study)) return false
         if (text.isBlank() || text.contains("رد تلقائي") || text.contains("auto-reply", true)) return false
         if (group && !sp.getBoolean("groups", false)) return false
         if (sp.getBoolean("only_study", false) && !study) return false
         val from = sp.getInt("from", -1)
         val to = sp.getInt("to", -1)
-        if (from >= 0 && to >= 0) {
+        if (!study && from >= 0 && to >= 0) {
             val h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
             val inside = if (from <= to) h in from until to else (h >= from || h < to)
             if (!inside) return false
         }
         val kws = (sp.getString("keywords", "") ?: "").split("|").filter { it.isNotBlank() }
-        if (kws.isNotEmpty() && kws.none { Brain.norm(text).contains(Brain.norm(it)) }) return false
+        if (!study && kws.isNotEmpty() && kws.none { Brain.norm(text).contains(Brain.norm(it)) }) return false
         val allowed = (sp.getString("contacts", "") ?: "").split("|").map { Brain.norm(it) }.filter { it.isNotBlank() }
         val ns = Brain.norm(sender)
-        val okSender = sp.getBoolean("everyone", false) || allowed.any { ns.contains(it) || (ns.length >= 3 && it.contains(ns)) }
+        val okSender = sp.getBoolean("everyone", false) || (study && allowed.isEmpty()) || allowed.any { ns.contains(it) || (ns.length >= 3 && it.contains(ns)) }
         if (!okSender) return false
         val now = System.currentTimeMillis()
         val dk = (now / 86_400_000L).toString()

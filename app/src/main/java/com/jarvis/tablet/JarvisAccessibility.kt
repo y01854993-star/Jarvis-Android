@@ -21,6 +21,8 @@ class JarvisAccessibility : AccessibilityService() {
 
     companion object {
         @Volatile var instance: JarvisAccessibility? = null
+        @Volatile var lastConnectedAt = 0L
+        @Volatile var lastDisconnectedAt = 0L
     }
 
     @Volatile private var waPendingUntil = 0L
@@ -30,6 +32,7 @@ class JarvisAccessibility : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        lastConnectedAt = System.currentTimeMillis()
         Config.load(this)
         Keys.init(this)
         Bus.log("Accessibility service ready")
@@ -37,7 +40,14 @@ class JarvisAccessibility : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
+        lastDisconnectedAt = System.currentTimeMillis()
         return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        instance = null
+        lastDisconnectedAt = System.currentTimeMillis()
+        super.onDestroy()
     }
 
     override fun onInterrupt() {}
@@ -288,6 +298,66 @@ class JarvisAccessibility : AccessibilityService() {
             target.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
         }
         return ok
+    }
+
+    // ---- coordinate gestures: x/y are normalized 0..1000 over the screen (x right, y down)
+    private fun pxOf(v: Int, total: Int): Float = (v.coerceIn(0, 1000) / 1000f) * total
+
+    fun tapNorm(x: Int, y: Int): Boolean {
+        val dm = resources.displayMetrics
+        return tapAt(pxOf(x, dm.widthPixels), pxOf(y, dm.heightPixels))
+    }
+
+    fun doubleTapNorm(x: Int, y: Int): Boolean {
+        val dm = resources.displayMetrics
+        val fx = pxOf(x, dm.widthPixels)
+        val fy = pxOf(y, dm.heightPixels)
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(fx, fy) }, 0, 50))
+            .addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(fx, fy) }, 130, 50))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
+    fun dragNorm(x1: Int, y1: Int, x2: Int, y2: Int, ms: Long = 450): Boolean {
+        val dm = resources.displayMetrics
+        val p = Path().apply {
+            moveTo(pxOf(x1, dm.widthPixels), pxOf(y1, dm.heightPixels))
+            lineTo(pxOf(x2, dm.widthPixels), pxOf(y2, dm.heightPixels))
+        }
+        return dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, ms)).build(), null, null
+        )
+    }
+
+    fun pasteInto(n: AccessibilityNodeInfo?): Boolean {
+        val target = n ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        return target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }
+
+    /** two-finger zoom around the screen centre (maps, photos, web pages) */
+    fun pinch(zoomIn: Boolean, ms: Long = 420): Boolean {
+        val dm = resources.displayMetrics
+        val cx = dm.widthPixels / 2f
+        val cy = dm.heightPixels / 2f
+        val near = dm.widthPixels * 0.08f
+        val far = dm.widthPixels * 0.30f
+        val from = if (zoomIn) near else far
+        val to = if (zoomIn) far else near
+        val p1 = Path().apply { moveTo(cx - from, cy); lineTo(cx - to, cy) }
+        val p2 = Path().apply { moveTo(cx + from, cy); lineTo(cx + to, cy) }
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p1, 0, ms))
+            .addStroke(GestureDescription.StrokeDescription(p2, 0, ms))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
+    fun imeEnter(): Boolean {
+        if (Build.VERSION.SDK_INT < 30) return false
+        val t = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        return t.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
     }
 
     fun global(name: String): Boolean = when (name) {

@@ -1,0 +1,190 @@
+name: Autofix
+# JARVIS autonomous engineer: problem report -> diagnosis -> fix on its own branch -> tests + build -> pull request for HUMAN approval.
+# It never merges. Only the repository owner can trigger it. Comment "/fix <note>" on an issue, or request changes on the PR, to re-run it.
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to analyse
+        required: true
+      note:
+        description: Extra instructions for the engineer
+        required: false
+        default: ""
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+concurrency:
+  group: autofix-${{ github.event.issue.number || inputs.issue_number || github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  fix:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.label.name == 'jarvis-problem' && github.event.issue.user.login == github.repository_owner) ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && startsWith(github.event.comment.body, '/fix') && github.event.comment.user.login == github.repository_owner) ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' && github.event.review.user.login == github.repository_owner && startsWith(github.event.pull_request.head.ref, 'autofix/'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve request
+        id: req
+        env:
+          EVENT: ${{ github.event_name }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          INPUT_NUM: ${{ inputs.issue_number }}
+          INPUT_NOTE: ${{ inputs.note }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          NOTE=""
+          case "$EVENT" in
+            issues) N="$ISSUE_NUM" ;;
+            issue_comment) N="$ISSUE_NUM"; NOTE="${COMMENT_BODY#/fix}" ;;
+            workflow_dispatch) N="$INPUT_NUM"; NOTE="$INPUT_NOTE" ;;
+            pull_request_review) N="${HEAD_REF#autofix/issue-}"; NOTE="$REVIEW_BODY" ;;
+          esac
+          case "$N" in ''|*[!0-9]*) echo "bad issue number"; exit 1;; esac
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+          printf '%s' "$NOTE" > note.txt
+      - name: Load issue (trusted authors only)
+        run: |
+          N="${{ steps.req.outputs.n }}"
+          AUTHOR=$(gh issue view "$N" --json author -q .author.login)
+          IS_BOT=$(gh issue view "$N" --json author -q .author.is_bot)
+          LABELS=$(gh issue view "$N" --json labels -q '[.labels[].name] | join(",")')
+          if [ "$AUTHOR" != "${{ github.repository_owner }}" ]; then
+            case "$LABELS" in *jarvis-build*) [ "$IS_BOT" = "true" ] || { echo "untrusted author"; exit 1; } ;; *) echo "untrusted author"; exit 1 ;; esac
+          fi
+          gh issue view "$N" --json body -q .body > issue.txt
+          for l in status:investigating status:awaiting-approval status:failed status:no-code-fix status:rejected status:resolved; do
+            gh label create "$l" --force >/dev/null 2>&1 || true
+          done
+          gh issue edit "$N" --add-label "status:investigating" || true
+          for l in status:failed status:no-code-fix status:rejected; do gh issue edit "$N" --remove-label "$l" >/dev/null 2>&1 || true; done
+      - name: Diagnose and prepare a fix
+        id: fix
+        env:
+          ISSUE_NUMBER: ${{ steps.req.outputs.n }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AUTOFIX_MODEL: ${{ vars.AUTOFIX_MODEL }}
+          AUTOFIX_CLAUDE_MODEL: ${{ vars.AUTOFIX_CLAUDE_MODEL }}
+        run: python3 .github/autofix/autofix.py
+      - name: Report (no code change proposed)
+        if: steps.fix.outputs.edited != 'true'
+        run: |
+          N="${{ steps.req.outputs.n }}"
+          if [ "${{ steps.fix.outputs.model }}" = "none" ]; then
+            { cat report_head.md; printf '\n**Setup needed:** no AI model could be reached. Add the `ANTHROPIC_API_KEY` (primary) or `GEMINI_API_KEY` secret in Settings > Secrets and variables > Actions, then comment `/fix` on this issue to retry. Nothing was modified.\n'; } > comment.md
+            gh issue comment "$N" --body-file comment.md
+            gh issue edit "$N" --add-label "status:failed" --remove-label "status:investigating" || true
+          else
+            { cat report_head.md; printf '\n_No code change was proposed. Nothing was modified. Model: %s_\n' "${{ steps.fix.outputs.model }}"; } > comment.md
+            gh issue comment "$N" --body-file comment.md
+            gh issue edit "$N" --add-label "status:no-code-fix" --remove-label "status:investigating" || true
+          fi
+      - uses: actions/setup-java@v4
+        if: steps.fix.outputs.edited == 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.fix.outputs.edited == 'true'
+        with:
+          gradle-version: 8.7
+      - name: Build debug APK
+        id: build
+        if: steps.fix.outputs.edited == 'true'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: gradle assembleDebug --no-daemon > build.log 2>&1
+      - name: Unit tests
+        id: tests
+        if: steps.fix.outputs.edited == 'true'
+        continue-on-error: true
+        run: gradle testDebugUnitTest --no-daemon > tests.log 2>&1
+      - name: Lint (informational)
+        id: lint
+        if: steps.fix.outputs.edited == 'true'
+        continue-on-error: true
+        run: gradle lintDebug --no-daemon > lint.log 2>&1
+      - name: Verify APK (package id, permissions, core integrations)
+        id: verify
+        if: steps.fix.outputs.edited == 'true' && steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK" || { echo "APK missing" | tee verify.log; exit 1; }
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          if [ "$PKG" != "com.jarvis.tablet" ]; then echo "package id changed: $PKG" | tee verify.log; exit 1; fi
+          git fetch origin main --depth=1 >/dev/null 2>&1 || true
+          REMOVED=$(git diff origin/main -- app/src/main/AndroidManifest.xml 2>/dev/null | grep '^-.*uses-permission' || true)
+          if [ -n "$REMOVED" ]; then printf 'permissions removed:\n%s\n' "$REMOVED" | tee verify.log; exit 1; fi
+          for f in Engine JarvisAccessibility Brain Keys Vault; do
+            test -f "app/src/main/java/com/jarvis/tablet/$f.kt" || { echo "core file missing: $f" | tee verify.log; exit 1; }
+          done
+          grep -q "JarvisAccessibility" app/src/main/AndroidManifest.xml || { echo "accessibility service removed from manifest" | tee verify.log; exit 1; }
+          echo "package id $PKG, permissions intact, core integrations present" | tee verify.log
+      - name: Upload APK artifact
+        if: steps.fix.outputs.edited == 'true' && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: autofix-apk-issue-${{ steps.req.outputs.n }}-run-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Open pull request for approval
+        if: steps.fix.outputs.edited == 'true' && steps.build.outcome == 'success' && steps.tests.outcome == 'success' && steps.verify.outcome == 'success'
+        run: |
+          N="${{ steps.req.outputs.n }}"
+          BR="autofix/issue-$N"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BR"
+          git add app/src
+          git commit -m "Autofix for issue #$N"
+          git push -f origin "$BR"
+          {
+            cat report_head.md
+            printf '\n### Test and build results\n| Check | Result |\n|---|---|\n| Build debug APK | %s |\n| Unit tests | %s |\n| APK verification | %s |\n| Lint (informational) | %s |\n' "${{ steps.build.outcome }}" "${{ steps.tests.outcome }}" "${{ steps.verify.outcome }}" "${{ steps.lint.outcome }}"
+            printf '\nVerification: %s\n' "$(cat verify.log | head -c 400)"
+            printf '\nAPK for testing (not installed anywhere automatically): [this run](%s/%s/actions/runs/%s), artifact `autofix-apk-issue-%s-run-%s`.\n' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" "$N" "${{ github.run_number }}"
+            printf '\n### Code changes\n```diff\n'
+            git diff HEAD~1 HEAD -- app/src | head -c 14000
+            printf '\n```\n'
+            printf '\n### How to decide (from the GitHub mobile app)\n- **APPROVE**: review, approve and **Merge** this pull request. Merging rebuilds the stable APK.\n- **REJECT**: close the pull request.\n- **REQUEST CHANGES**: submit a review with "Request changes" and your note; the engineer tries again.\n- **INVESTIGATE MORE**: comment `/fix <what to look into>` on the issue.\n\nFixes #%s\n' "$N"
+          } > pr_body.md
+          EXISTING=$(gh pr list --head "$BR" --state open --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --body-file pr_body.md
+          else
+            gh pr create --base main --head "$BR" --title "Autofix for issue #$N" --body-file pr_body.md \
+              || gh issue comment "$N" --body "Fix pushed to branch $BR. Could not open the pull request automatically: enable 'Allow GitHub Actions to create and approve pull requests' in the repository settings."
+          fi
+          gh issue edit "$N" --add-label "status:awaiting-approval" --remove-label "status:investigating" || true
+      - name: Report failure (fix did not pass checks)
+        if: steps.fix.outputs.edited == 'true' && (steps.build.outcome != 'success' || steps.tests.outcome != 'success' || steps.verify.outcome != 'success')
+        run: |
+          N="${{ steps.req.outputs.n }}"
+          {
+            cat report_head.md
+            printf '\n**The proposed change did NOT pass the checks, so no pull request was opened and nothing was merged.**\n\n| Check | Result |\n|---|---|\n| Build | %s |\n| Unit tests | %s |\n| APK verification | %s |\n' "${{ steps.build.outcome }}" "${{ steps.tests.outcome }}" "${{ steps.verify.outcome }}"
+            for f in build.log tests.log verify.log; do
+              if [ -s "$f" ]; then printf '\n`%s` (tail):\n```\n' "$f"; tail -n 25 "$f"; printf '```\n'; fi
+            done
+          } > comment.md
+          gh issue comment "$N" --body-file comment.md
+          gh issue edit "$N" --add-label "status:failed" --remove-label "status:investigating" || true

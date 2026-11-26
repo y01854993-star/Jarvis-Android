@@ -1,0 +1,54 @@
+name: Skill status
+# Keeps the skill database in sync with the decision on a skill pull request.
+on:
+  pull_request:
+    types: [closed]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  status:
+    if: startsWith(github.event.pull_request.head.ref, 'skill/')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      MERGED: ${{ github.event.pull_request.merged }}
+      PRN: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Attach the data branch
+        run: |
+          if git ls-remote --exit-code --heads origin skill-hunter-data >/dev/null 2>&1; then
+            git fetch origin skill-hunter-data
+            git worktree add -B skill-hunter-data data origin/skill-hunter-data
+          else
+            git worktree add --detach data
+            (cd data && git checkout --orphan skill-hunter-data && git rm -rf . >/dev/null 2>&1 || true)
+          fi
+      - name: Update the database and the issue
+        env:
+          MSG: skill pull request closed
+        run: |
+          N="${HEAD_REF#skill/issue-}"
+          case "$N" in ''|*[!0-9]*) exit 0;; esac
+          gh label create skill:integrated --force >/dev/null 2>&1 || true
+          gh label create skill:rejected --force >/dev/null 2>&1 || true
+          if [ "$MERGED" = "true" ]; then
+            python3 .github/skillhunter/dbtool.py --data data --issue "$N" --status INTEGRATED --event "pull request #$PRN merged by the owner"
+            gh issue edit "$N" --add-label skill:integrated --remove-label skill:integrating || true
+            gh issue comment "$N" --body "Integrated: pull request #$PRN was merged. The stable APK is rebuilding from main."
+          else
+            python3 .github/skillhunter/dbtool.py --data data --issue "$N" --status REJECTED --event "pull request #$PRN closed without merging"
+            gh issue edit "$N" --add-label skill:rejected --remove-label skill:integrating || true
+            gh issue comment "$N" --body "Pull request #$PRN was closed without merging, so the skill is marked REJECTED."
+          fi
+          cd "$GITHUB_WORKSPACE/data"
+          git add -A
+          if git diff --cached --quiet; then echo "no data changes"; else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "$MSG"
+            git push -q origin HEAD:skill-hunter-data
+          fi

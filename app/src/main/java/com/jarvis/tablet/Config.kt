@@ -20,7 +20,7 @@ object Config {
     fun chunkSeconds() = json.optInt("chunk_seconds", 6)
     fun silenceRms() = json.optDouble("silence_rms", 300.0)
     fun allowedCaller() = json.optString("allowed_caller", "")
-    fun brain() = json.optString("brain", "auto")
+    fun brain(): String = Keys.brainOrNull() ?: json.optString("brain", "auto")
     fun ttsProvider() = json.optString("tts_provider", "auto")
     fun ttsVoice() = json.optString("tts_voice", "onyx")
     fun groqArabicVoice() = json.optString("groq_arabic_voice", "fahad")
@@ -36,8 +36,12 @@ object Config {
     fun geminiDeepModel() = json.optString("gemini_deep_model", "gemini-2.5-pro")
     fun localModel() = json.optString("local_model", "qwen2.5-1.5b-instruct")
     fun localMaxTokens() = json.optInt("local_max_tokens", 400)
-    fun sttLang() = json.optString("stt_lang", "ar-EG")
-    fun assistantName() = json.optString("assistant_name", "جرجس")
+    fun sttLang(): String = Keys.langOrNull() ?: json.optString("stt_lang", "ar-EG")
+    fun assistantName(): String {
+        val en = sttLang().startsWith("en")
+        val n = json.optString("assistant_name", "")
+        return if (en) "Jarvis" else if (n.isBlank() || n == "جرجس") "جارفيس" else n
+    }
     fun ownerName() = json.optString("owner_name", "ياسين الزكي")
     fun studyAnswer() = json.optBoolean("study_answer", true)
     fun studySms() = json.optBoolean("study_sms", true)

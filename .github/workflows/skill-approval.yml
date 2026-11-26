@@ -1,0 +1,190 @@
+name: Skill approval
+# Owner commands on a "Skill proposal" issue: /approve  /test  /info <question>  /reject
+# /approve and /test prepare an isolated branch and a pull request. NOTHING is merged without the owner approving that pull request.
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+concurrency:
+  group: skill-approval-${{ github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  decide:
+    if: >-
+      !github.event.issue.pull_request &&
+      contains(github.event.issue.labels.*.name, 'skill-proposal') &&
+      github.event.comment.user.login == github.repository_owner &&
+      (startsWith(github.event.comment.body, '/approve') || startsWith(github.event.comment.body, '/reject') ||
+       startsWith(github.event.comment.body, '/info') || startsWith(github.event.comment.body, '/test'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      N: ${{ github.event.issue.number }}
+      COMMENT_BODY: ${{ github.event.comment.body }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Attach the data branch
+        run: |
+          if git ls-remote --exit-code --heads origin skill-hunter-data >/dev/null 2>&1; then
+            git fetch origin skill-hunter-data
+            git worktree add -B skill-hunter-data data origin/skill-hunter-data
+          else
+            git worktree add --detach data
+            (cd data && git checkout --orphan skill-hunter-data && git rm -rf . >/dev/null 2>&1 || true)
+          fi
+      - name: Read the command
+        id: cmd
+        run: |
+          CMD=$(printf '%s' "$COMMENT_BODY" | head -n1 | awk '{print $1}')
+          ARG=$(printf '%s' "$COMMENT_BODY" | head -n1 | cut -d' ' -f2-)
+          case "$CMD" in /approve|/reject|/info|/test) ;; *) echo "unknown command"; exit 1;; esac
+          echo "cmd=$CMD" >> "$GITHUB_OUTPUT"
+          printf '%s' "$ARG" > question.txt
+          for l in skill:awaiting-approval skill:integrating skill:rejected skill:failed skill:integrated; do gh label create "$l" --force >/dev/null 2>&1 || true; done
+      - name: Reject
+        if: steps.cmd.outputs.cmd == '/reject'
+        env:
+          MSG: skill rejected
+        run: |
+          python3 .github/skillhunter/dbtool.py --data data --issue "$N" --status REJECTED --event "rejected by the owner"
+          gh issue edit "$N" --add-label skill:rejected --remove-label skill:awaiting-approval || true
+          gh issue comment "$N" --body "Rejected. The project stays in the database as REJECTED and will not be proposed again unless it publishes a new release."
+          gh issue close "$N" --reason "not planned" || true
+          cd "$GITHUB_WORKSPACE/data"
+          git add -A
+          if git diff --cached --quiet; then echo "no data changes"; else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "$MSG"
+            git push -q origin HEAD:skill-hunter-data
+          fi
+      - name: Answer a question
+        if: steps.cmd.outputs.cmd == '/info'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AUTOFIX_CLAUDE_MODEL: ${{ vars.AUTOFIX_CLAUDE_MODEL }}
+        run: |
+          python3 .github/skillhunter/integrate.py --data data --issue "$N" --mode info --question "$(cat question.txt)"
+          gh issue comment "$N" --body-file integration_report.md
+      - name: Mark as integrating
+        if: steps.cmd.outputs.cmd == '/approve' || steps.cmd.outputs.cmd == '/test'
+        env:
+          MSG: skill approved
+        run: |
+          python3 .github/skillhunter/dbtool.py --data data --issue "$N" --status INTEGRATING --event "approved by the owner (${{ steps.cmd.outputs.cmd }})"
+          REPO=$(python3 -c "import json;d=json.load(open('data/skills.json'));print([r['repo'] for r in d['skills'].values() if (r.get('approval') or {}).get('issue')==$N][0])")
+          echo "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || { echo "bad repo name"; exit 1; }
+          echo "REPO=$REPO" >> "$GITHUB_ENV"
+          gh issue edit "$N" --add-label skill:integrating --remove-label skill:awaiting-approval || true
+          git clone --depth 1 "https://github.com/$REPO.git" vendor_src
+          rm -rf vendor_src/.git
+          cd "$GITHUB_WORKSPACE/data"
+          git add -A
+          if git diff --cached --quiet; then echo "no data changes"; else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "$MSG"
+            git push -q origin HEAD:skill-hunter-data
+          fi
+      - name: Prepare the integration (reads the vendor files, never runs them)
+        id: integ
+        if: steps.cmd.outputs.cmd == '/approve' || steps.cmd.outputs.cmd == '/test'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AUTOFIX_MODEL: ${{ vars.AUTOFIX_MODEL }}
+          AUTOFIX_CLAUDE_MODEL: ${{ vars.AUTOFIX_CLAUDE_MODEL }}
+        run: python3 .github/skillhunter/integrate.py --data data --issue "$N" --vendor vendor_src
+      - uses: actions/setup-java@v4
+        if: steps.integ.outputs.edited == 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.integ.outputs.edited == 'true'
+        with:
+          gradle-version: 8.7
+      - name: Build, unit tests
+        id: build
+        if: steps.integ.outputs.edited == 'true'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -o pipefail
+          gradle testDebugUnitTest assembleDebug --no-daemon 2>&1 | tee build.log
+      - name: Android compatibility and APK checks
+        id: verify
+        if: steps.integ.outputs.edited == 'true' && steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK" || { echo "APK missing" | tee verify.log; exit 1; }
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          MIN=$("$AAPT" dump badging "$APK" | sed -n "s/^sdkVersion:'\([0-9]*\)'.*/\1/p")
+          [ "$PKG" = "com.jarvis.tablet" ] || { echo "package id changed: $PKG" | tee verify.log; exit 1; }
+          [ "$MIN" -le 26 ] || { echo "minSdk raised to $MIN" | tee verify.log; exit 1; }
+          git fetch origin main --depth=1 >/dev/null 2>&1 || true
+          REMOVED=$(git diff origin/main -- app/src/main/AndroidManifest.xml 2>/dev/null | grep '^-.*uses-permission' || true)
+          [ -z "$REMOVED" ] || { printf 'permissions removed:\n%s\n' "$REMOVED" | tee verify.log; exit 1; }
+          echo "package $PKG, minSdk $MIN, no permission removed" | tee verify.log
+      - name: Upload APK artifact
+        if: steps.integ.outputs.edited == 'true' && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-apk-issue-${{ github.event.issue.number }}-run-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Open the pull request
+        if: steps.integ.outputs.edited == 'true' && steps.build.outcome == 'success' && steps.verify.outcome == 'success'
+        env:
+          CMD: ${{ steps.cmd.outputs.cmd }}
+          MSG: skill pull request opened
+        run: |
+          BR="skill/issue-$N"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BR"
+          git add -A app THIRD_PARTY_NOTICES.md
+          git commit -m "Integrate skill from issue #$N ($REPO)"
+          git push -f origin "$BR"
+          {
+            cat integration_report.md
+            printf '\n### Checks\n| Check | Result |\n|---|---|\n| Build + unit tests | %s |\n| APK / compatibility | %s |\n\nAPK for testing: [this run](%s/%s/actions/runs/%s), artifact `skill-apk-issue-%s-run-%s`. Nothing is installed automatically.\n' "${{ steps.build.outcome }}" "${{ steps.verify.outcome }}" "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" "$N" "${{ github.run_number }}"
+            printf '\n**Review it, then Approve and Merge from the GitHub app, or close it to reject.** The AI never approves its own pull request.\n\nCloses #%s\n' "$N"
+          } > pr_body.md
+          FLAG=""; [ "$CMD" = "/test" ] && FLAG="--draft"
+          URL=$(gh pr create --base main --head "$BR" --title "Skill integration: $REPO" --body-file pr_body.md $FLAG) \
+            || { gh issue comment "$N" --body "Branch $BR pushed but the pull request could not be opened automatically (enable 'Allow GitHub Actions to create and approve pull requests' in settings)."; exit 0; }
+          PRN="${URL##*/}"
+          cd "$GITHUB_WORKSPACE/data"
+          python3 "$GITHUB_WORKSPACE/.github/skillhunter/dbtool.py" --data . --issue "$N" --status TESTING --pr "$PRN" --pr-url "$URL" --event "pull request #$PRN opened"
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "$MSG" || true
+          git push -q origin HEAD:skill-hunter-data
+      - name: Report failure
+        if: steps.cmd.outputs.cmd == '/approve' || steps.cmd.outputs.cmd == '/test'
+        env:
+          MSG: skill integration failed
+          EDITED: ${{ steps.integ.outputs.edited }}
+          BUILD: ${{ steps.build.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+        run: |
+          if [ "$EDITED" = "true" ] && [ "$BUILD" = "success" ] && [ "$VERIFY" = "success" ]; then exit 0; fi
+          {
+            cat integration_report.md 2>/dev/null || echo "Integration did not run."
+            printf '\n\n**No pull request was opened and nothing was merged.** Build: %s, verification: %s.\n' "$BUILD" "$VERIFY"
+            for f in build.log verify.log; do [ -s "$f" ] && { printf '\n`%s` (tail):\n```\n' "$f"; tail -n 25 "$f"; printf '```\n'; }; done
+          } > comment.md
+          gh issue comment "$N" --body-file comment.md
+          python3 .github/skillhunter/dbtool.py --data data --issue "$N" --status FAILED --event "integration failed (build: $BUILD, verify: $VERIFY)"
+          gh issue edit "$N" --add-label skill:failed --remove-label skill:integrating || true
+          cd "$GITHUB_WORKSPACE/data"
+          git add -A
+          if git diff --cached --quiet; then echo "no data changes"; else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "$MSG"
+            git push -q origin HEAD:skill-hunter-data
+          fi

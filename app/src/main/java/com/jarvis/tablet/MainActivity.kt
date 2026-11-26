@@ -31,6 +31,44 @@ class MainActivity : Activity() {
         web.settings.domStorageEnabled = true
         web.addJavascriptInterface(object {
             @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
+            @JavascriptInterface fun setLang(l: String) { Keys.setLang(l) }
+            @JavascriptInterface fun fixStats(): String = try { GitHub.fixStats().toString() } catch (_: Exception) { "{}" }
+            @JavascriptInterface fun openUrl(u: String) {
+                if (u.startsWith("https://github.com/")) {
+                    try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(u)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
+                }
+            }
+            @JavascriptInterface fun reportProblem(s: String) { Problems.add(s.take(300)) }
+            @JavascriptInterface fun skillStats(): String = try { GitHub.skillSummary() ?: "{}" } catch (_: Exception) { "{}" }
+            @JavascriptInterface fun skillAction(issue: Int, cmd: String): String {
+                if (issue <= 0 || cmd !in setOf("/approve", "/reject", "/test", "/info")) return "refused"
+                val body = if (cmd == "/info") "/info please share more details and the main risks" else cmd
+                return try { if (GitHub.commentIssue(issue, body)) "ok" else "failed" } catch (_: Exception) { "failed" }
+            }
+            @JavascriptInterface fun localProblems(): String = try {
+                val arr = org.json.JSONArray()
+                Problems.lines().takeLast(6).reversed().forEach { arr.put(Redact.mask(it).take(300)) }
+                arr.toString()
+            } catch (_: Exception) { "[]" }
+            private fun reply(id: String, result: String) {
+                runOnUiThread { web.evaluateJavascript("window.onBridgeResult&&window.onBridgeResult(${JSONObject.quote(id)},${JSONObject.quote(result)})", null) }
+            }
+            @JavascriptInterface fun diagnoseProblemAsync(id: String, text: String) {
+                Thread { reply(id, Bus.onDiagnose?.invoke(text) ?: "{\"error\":\"engine not ready\"}") }.start()
+            }
+            @JavascriptInterface fun reportProblemToGitHub(id: String, text: String) {
+                Thread {
+                    val ok = try { GitHub.createIssue("Jarvis problem reported from the HUD", "Reported from the HUD.\n\n```\n" + Redact.mask(text).take(1500) + "\n```\n", listOf("jarvis-problem")) } catch (_: Exception) { false }
+                    reply(id, if (ok) "ok" else "failed")
+                }.start()
+            }
+            @JavascriptInterface fun askEngineer(id: String, issue: Int) {
+                Thread {
+                    val ok = try { issue > 0 && GitHub.commentIssue(issue, "/fix") } catch (_: Exception) { false }
+                    reply(id, if (ok) "ok" else "failed")
+                }.start()
+            }
+            @JavascriptInterface fun routerStats(): String = try { Usage.dashboard().toString() } catch (_: Exception) { "{}" }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
             @JavascriptInterface fun testLocal() { Bus.onTestLocal?.invoke() }
             @JavascriptInterface fun testVoice() { Bus.onTestVoice?.invoke() }

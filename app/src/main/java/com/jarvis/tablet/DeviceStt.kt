@@ -61,7 +61,7 @@ class DeviceStt(private val ctx: Context) {
                 r.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {}
                     override fun onBeginningOfSpeech() {}
-                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onRmsChanged(rmsdB: Float) { Bus.level(((rmsdB + 2f) / 12f).toDouble()) }
                     override fun onBufferReceived(buffer: ByteArray?) {}
                     override fun onEndOfSpeech() {}
                     override fun onPartialResults(partialResults: Bundle?) {}

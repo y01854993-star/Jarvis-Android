@@ -17,6 +17,11 @@ object Health {
 
     fun isDisabled(p: String): Boolean = ready() && System.currentTimeMillis() < sp.getLong("until_$p", 0L)
 
+    fun remainingMs(p: String): Long =
+        if (!ready()) 0L else (sp.getLong("until_$p", 0L) - System.currentTimeMillis()).coerceAtLeast(0L)
+
+    fun why(p: String): String = if (ready()) sp.getString("why_$p", "") ?: "" else ""
+
     fun markOk(p: String) {
         if (!ready()) return
         sp.edit().remove("until_$p").remove("why_$p").putInt("fails_$p", 0).apply()
@@ -24,6 +29,7 @@ object Health {
 
     fun markFail(p: String, e: Exception) {
         if (!ready() || p == "local" || e !is HttpException) return
+        if (e.code == 413) return   // request too large for this provider: not a failure of the provider, the router avoids it by prompt size
         val credit = e.body.contains("credit", true) || e.body.contains("quota", true) ||
             e.body.contains("billing", true) || e.body.contains("insufficient", true)
         val hard = e.code == 401 || e.code == 402 || e.code == 403 || (e.code == 429 && credit)
@@ -36,7 +42,14 @@ object Health {
             else -> "خطأ ${e.code}"
         }
         val ed = sp.edit().putInt("fails_$p", n).putString("why_$p", why)
-        if (hard || n >= 3) ed.putLong("until_$p", System.currentTimeMillis() + DAY)
+        // hard failures (bad key, no credit) = a day; plain rate limit = 3 minutes so the next model takes over right away
+        val cool = when {
+            hard -> DAY
+            e.code == 429 -> 3L * 60 * 1000
+            n >= 3 -> 15L * 60 * 1000
+            else -> 0L
+        }
+        if (cool > 0) ed.putLong("until_$p", System.currentTimeMillis() + cool)
         ed.apply()
     }
 }

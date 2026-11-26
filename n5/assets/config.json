@@ -1,0 +1,68 @@
+{
+  "model": "gemini-2.5-flash",
+  "always_listen": false,
+  "audio_source": "MIC",
+  "chunk_seconds": 6,
+  "silence_rms": 300,
+  "allowed_caller": "",
+  "botim_package_hints": [
+    "botim",
+    "thebot"
+  ],
+  "answer_texts": [
+    "Answer",
+    "Accept",
+    "رد",
+    "الرد",
+    "قبول"
+  ],
+  "answer_tap": null,
+  "pc_mac": "AA:BB:CC:DD:EE:FF",
+  "broadcast_ip": "192.168.1.255",
+  "contacts": {
+    "ماما": "01000000000",
+    "احمد": "01111111111"
+  },
+  "groq_models": [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b"
+  ],
+  "openai_models": [
+    "gpt-4o",
+    "gpt-4o-mini"
+  ],
+  "brain": "auto",
+  "tts_provider": "auto",
+  "tts_voice": "onyx",
+  "groq_arabic_voice": "fahad",
+  "robot_fx": 0.0,
+  "wake_phrase": "Yeah, Boss?",
+  "followup_phrase": "Anything else?",
+  "bye_phrase": "Alright, I'm here if you need me.",
+  "confirm_messages": true,
+  "gemini_voice": "Charon",
+  "gemini_tts_models": [
+    "gemini-2.5-flash-preview-tts"
+  ],
+  "agent_vision": true,
+  "router": "smart",
+  "gemini_deep_model": "gemini-2.5-pro",
+  "deepseek_models": [
+    "deepseek-chat"
+  ],
+  "kimi_models": [
+    "kimi-k2-0905-preview"
+  ],
+  "local_model": "qwen2.5-1.5b-instruct",
+  "local_max_tokens": 400,
+  "stt_lang": "ar-EG",
+  "assistant_name": "جارفيس",
+  "owner_name": "ياسين الزكي",
+  "study_answer": true,
+  "study_sms": true,
+  "study_voip_packages": [
+    "whatsapp",
+    "botim"
+  ]
+}

@@ -21,8 +21,23 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -o pipefail
-          gradle assembleDebug --no-daemon 2>&1 | tee build.log
+          gradle testDebugUnitTest assembleDebug --no-daemon 2>&1 | tee build.log
+      - name: Upload APK (branches)
+        if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-apk-build-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish preview (branches, pre-release only)
+        if: github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/autofix/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk jarvis-preview.apk
+          gh release delete preview --yes --cleanup-tag || true
+          gh release create preview jarvis-preview.apk --prerelease --title "Jarvis preview (${{ github.ref_name }})" --notes "Test build from branch ${{ github.ref_name }}, commit ${{ github.sha }}. Not the stable release." --target "${{ github.sha }}"
       - name: Publish release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
