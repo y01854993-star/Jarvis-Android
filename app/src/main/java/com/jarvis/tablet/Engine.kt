@@ -376,9 +376,14 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         res.optJSONArray("actions")?.let { arr ->
             for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { list.add(it) }
         }
+        var taskStatus = "completed"
         for ((idx, a) in list.withIndex()) {
             val err = runAction(a)
-            if (err != null) { reply = err; break }
+            if (err != null) {
+                reply = err
+                taskStatus = if (err.contains("الغيتها")) "cancelled" else "failed"
+                break
+            }
             if (idx < list.size - 1) settle()
         }
         agentSummary?.let { reply = it; agentSummary = null }
@@ -386,6 +391,7 @@ class Engine(private val ctx: Context, private val scope: CoroutineScope) {
         if (reply.isNotEmpty()) {
             history.addLast(userText to reply)
             Brain.addTurn(userText, reply)
+            Brain.addTask(userText, reply, taskStatus)
             while (history.size > 16) history.removeFirst()
             val sp = res.optString("speech").trim()
             speak(if (reply == modelReply && sp.isNotEmpty()) sp else reply, false, reply)

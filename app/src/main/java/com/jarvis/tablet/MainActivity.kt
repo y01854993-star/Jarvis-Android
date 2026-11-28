@@ -13,6 +13,8 @@ import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.widget.Toast
 import org.json.JSONObject
 
@@ -29,6 +31,14 @@ class MainActivity : Activity() {
         setContentView(web)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
+        web.settings.allowFileAccess = true // required only for the bundled HUD assets
+        web.settings.allowFileAccessFromFileURLs = false
+        web.settings.allowUniversalAccessFromFileURLs = false
+        web.settings.allowContentAccess = false
+        web.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        web.settings.javaScriptCanOpenWindowsAutomatically = false
+        web.settings.setSupportMultipleWindows(false)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         web.addJavascriptInterface(object {
             @JavascriptInterface fun sendText(t: String) { Bus.onText?.invoke(t) }
             @JavascriptInterface fun toggleListen(lang: String) { Bus.onToggle?.invoke(lang) }
@@ -45,12 +55,25 @@ class MainActivity : Activity() {
                 } catch (_: Exception) {}
             }
             @JavascriptInterface fun toggleStudy() { Bus.onToggleStudy?.invoke() }
-            @JavascriptInterface fun setKeys(json: String) {
-                try { Keys.save(JSONObject(json)) } catch (_: Exception) {}
+            @JavascriptInterface fun setKeys(json: String): Boolean {
+                return try { Keys.save(JSONObject(json)) } catch (_: Exception) { false }
+            }
+            @JavascriptInterface fun clearKeys() { Keys.clearSecrets() }
+            @JavascriptInterface fun hasSavedKeys(): Boolean { return try { Keys.hasCloud() } catch (_: Exception) { false } }
+            @JavascriptInterface fun taskHistory(): String {
+                return try { Brain.init(this@MainActivity); Brain.recentTasksJson(50) } catch (_: Exception) { "[]" }
             }
         }, "AndroidBridge")
         web.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val uri = request.url
+                val isBundledAsset = uri.scheme == "file" && uri.host.isNullOrEmpty() &&
+                    uri.path?.startsWith("/android_asset/") == true
+                return !isBundledAsset
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
+                if (!url.startsWith("file:///android_asset/")) return
                 val js = assets.open("hud_bridge.js").bufferedReader().readText()
                 view.evaluateJavascript(js, null)
                 Bus.lastStatus?.let { push(it) }
@@ -68,8 +91,7 @@ class MainActivity : Activity() {
 
         val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS,
             Manifest.permission.CALL_PHONE, Manifest.permission.SEND_SMS, Manifest.permission.READ_CALENDAR,
-            Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG, Manifest.permission.ANSWER_PHONE_CALLS,
-            Manifest.permission.CAMERA)
+            Manifest.permission.READ_PHONE_STATE, Manifest.permission.ANSWER_PHONE_CALLS)
         if (Build.VERSION.SDK_INT >= 33) needed.add(Manifest.permission.POST_NOTIFICATIONS)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startEngine()
         val missing = needed.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }

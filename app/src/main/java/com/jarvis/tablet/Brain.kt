@@ -60,7 +60,7 @@ object Brain {
             try { file.renameTo(File(ctx.filesDir, "brain.corrupt." + System.currentTimeMillis())) } catch (_: Exception) {}
         }
         data = loadedData ?: JSONObject()
-        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros")) if (!data.has(k)) data.put(k, JSONArray())
+        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros", "tasks")) if (!data.has(k)) data.put(k, JSONArray())
         if (!data.has("projects")) data.put("projects", JSONObject())
         idc = System.currentTimeMillis()
         for (k in listOf("facts", "notes", "sums")) {
@@ -101,7 +101,7 @@ object Brain {
     private fun save() {
         try {
             val plain = data.toString().toByteArray(Charsets.UTF_8)
-            val out = try { Vault.encrypt(plain) } catch (_: Exception) { plain }
+            val out = try { Vault.encrypt(plain) } catch (_: Exception) { return }
             val tmp = File(file.parentFile, "brain.json.tmp")
             tmp.writeBytes(out)
             if (file.exists() && (++saves % 15 == 1)) { try { file.copyTo(bak, overwrite = true) } catch (_: Exception) {} }
@@ -118,6 +118,28 @@ object Brain {
             out.add(o.optString("u") to o.optString("r"))
         }
         return out
+    }
+
+    @Synchronized
+    fun addTask(request: String, result: String, status: String) {
+        if (request.isBlank() && result.isBlank()) return
+        val a = arr("tasks")
+        a.put(JSONObject()
+            .put("request", request.take(600))
+            .put("result", result.take(600))
+            .put("status", status.take(24))
+            .put("ts", System.currentTimeMillis()))
+        cap(a, 100)
+        save()
+    }
+
+    @Synchronized
+    fun recentTasksJson(limit: Int = 50): String {
+        val a = arr("tasks")
+        val out = JSONArray()
+        val start = maxOf(0, a.length() - limit.coerceIn(1, 100))
+        for (i in a.length() - 1 downTo start) out.put(a.getJSONObject(i))
+        return out.toString()
     }
 
     @Synchronized
@@ -180,7 +202,7 @@ object Brain {
     @Synchronized
     fun wipe() {
         data = JSONObject()
-        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros")) data.put(k, JSONArray())
+        for (k in listOf("facts", "rules", "notes", "sums", "turns", "skills", "places", "macros", "tasks")) data.put(k, JSONArray())
         data.put("projects", JSONObject())
         data.put("migrated", true)
         emb.clear()

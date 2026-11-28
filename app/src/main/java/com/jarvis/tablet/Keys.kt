@@ -11,6 +11,11 @@ object Keys {
     private val cache = HashMap<String, String>()
     @Volatile var version = 0
 
+    private val secretFields = linkedMapOf(
+        "gpt" to "openai", "groq" to "groq", "gem" to "gemini", "fish" to "fish",
+        "ds" to "ds", "kimi" to "kimi", "gh" to "ghtoken", "freekey" to "freekey"
+    )
+
     @Synchronized
     fun init(ctx: Context) {
         if (!::sp.isInitialized) sp = ctx.getSharedPreferences("jarvis", Context.MODE_PRIVATE)
@@ -22,26 +27,15 @@ object Keys {
         val v = sp.getString(k, "") ?: ""
         val plain = if (v.startsWith("ENC:")) {
             try { String(Vault.decrypt(Base64.decode(v.substring(4), Base64.NO_WRAP)), Charsets.UTF_8) } catch (_: Exception) { "" }
-        } else v
+        } else v // legacy plaintext entries are read for migration, but never written again
         cache[k] = plain
         return plain
-    }
-
-    @Synchronized
-    private fun sput(e: SharedPreferences.Editor, k: String, value: String) {
-        val t = value.trim()
-        cache[k] = t
-        if (t.isEmpty()) { e.putString(k, ""); return }
-        val enc = try {
-            "ENC:" + Base64.encodeToString(Vault.encrypt(t.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
-        } catch (_: Exception) { t }
-        e.putString(k, enc)
     }
 
     // ---- secrets
     val groq: String get() = sget("groq")
     val openai: String get() = sget("openai")
-    val gemini: String get() = sget("gemini").ifBlank { BuildConfig.GEMINI_KEY }
+    val gemini: String get() = sget("gemini")
     val fish: String get() = sget("fish")
     val ds: String get() = sget("ds")
     val kimi: String get() = sget("kimi")
@@ -88,22 +82,42 @@ object Keys {
     }
 
     @Synchronized
+    fun clearSecrets() {
+        cache.clear()
+        val e = sp.edit()
+        secretFields.values.forEach { e.remove(it) }
+        e.apply()
+        version++
+    }
+
+    @Synchronized
     fun wipeAll() {
         cache.clear()
         sp.edit().clear().apply()
     }
 
-    fun save(json: JSONObject) {
-        version++
+    /** Saves settings. Blank secret fields mean "leave unchanged"; key removal is explicit. */
+    @Synchronized
+    fun save(json: JSONObject): Boolean {
+        val encrypted = LinkedHashMap<String, String>()
+        try {
+            for ((field, prefKey) in secretFields) {
+                val value = json.optString(field).trim()
+                if (value.isNotEmpty()) {
+                    encrypted[prefKey] = "ENC:" + Base64.encodeToString(
+                        Vault.encrypt(value.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            return false // never fall back to plaintext
+        }
+
         val e = sp.edit()
-        sput(e, "openai", json.optString("gpt"))
-        sput(e, "groq", json.optString("groq"))
-        sput(e, "gemini", json.optString("gem"))
-        sput(e, "fish", json.optString("fish"))
-        sput(e, "ds", json.optString("ds"))
-        sput(e, "kimi", json.optString("kimi"))
-        sput(e, "ghtoken", json.optString("gh"))
-        sput(e, "freekey", json.optString("freekey"))
+        for ((key, value) in encrypted) {
+            e.putString(key, value)
+            cache[key] = json.optString(secretFields.entries.first { it.value == key }.key).trim()
+        }
         e.putString("freeurl", json.optString("freeurl").trim())
         e.putString("name", json.optString("name").trim())
         e.putString("fishvoice", json.optString("fishv").trim())
@@ -119,5 +133,7 @@ object Keys {
         e.putFloat("pitch", json.optDouble("pitch", 1.0).toFloat().coerceIn(0.6f, 1.6f))
         e.putInt("patience", json.optInt("patience", 1200).coerceIn(500, 3000))
         e.apply()
+        version++
+        return true
     }
 }

@@ -14,7 +14,7 @@ object Config {
         loaded = true
     }
 
-    val apiKey: String get() = BuildConfig.GEMINI_KEY
+    val apiKey: String get() = Keys.gemini
     fun model() = json.optString("model", "gemini-2.5-flash")
     fun alwaysListen() = json.optBoolean("always_listen", false)
     fun chunkSeconds() = json.optInt("chunk_seconds", 6)

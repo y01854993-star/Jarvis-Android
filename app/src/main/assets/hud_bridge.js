@@ -3,79 +3,56 @@
   const B = window.AndroidBridge;
   if (!B) return;
 
-  // العقل والمايك والتنفيذ في التطبيق؛ الصفحة للعرض والكتابة
+  // The Android engine owns microphone, model keys, and task execution.
   window.handle = function (t) { if (t) B.sendText(t); };
-  window.toggle = function () {
-    B.toggleListen(typeof currentLang !== "undefined" ? currentLang : "ar-EG");
-  };
+  window.toggle = function () { B.toggleListen(typeof currentLang !== "undefined" ? currentLang : "ar-EG"); };
   const hud = $("hud"); if (hud) hud.onclick = window.toggle;
 
-  // خانة مفتاح Gemini (للصوت)، والضغط على الساعة بيظهر/يخفي لوحة المفاتيح
   const panel = $("setupPanel");
   if (panel && !$("kGem")) {
     const div = document.createElement("div");
     div.className = "ig";
-    div.innerHTML = '<label>Gemini Key (صوت أفضل - مجاني)</label><input type="text" id="kGem" autocomplete="off" spellcheck="false" placeholder="AIza...">';
+    div.innerHTML = '<label>Gemini Key (صوت أفضل - مجاني)</label><input type="password" id="kGem" autocomplete="new-password" spellcheck="false" placeholder="AIza...">';
     panel.insertBefore(div, $("saveBtn"));
-    $("kGem").value = localStorage.getItem("k_gem") || "";
   }
   if (panel && !$("kFish")) {
     const d2 = document.createElement("div");
     d2.className = "ig";
-    d2.innerHTML = '<label>Fish Audio Key (صوت Jarvis MCU)</label><input type="text" id="kFish" autocomplete="off" spellcheck="false" placeholder="Fish API key">' +
-                   '<label style="margin-top:6px">Fish Voice ID (من رابط الصوت fish.audio/m/...)</label><input type="text" id="kFishV" placeholder="مثال: 9f79a93aa44b...">';
+    d2.innerHTML = '<label>Fish Audio Key (صوت Jarvis MCU)</label><input type="password" id="kFish" autocomplete="new-password" placeholder="Fish API key">' +
+      '<label style="margin-top:6px">Fish Voice ID (من رابط الصوت fish.audio/m/...)</label><input type="text" id="kFishV" placeholder="مثال: 9f79a93aa44b...">';
     panel.insertBefore(d2, $("saveBtn"));
-    $("kFish").value = localStorage.getItem("k_fish") || "";
-    $("kFishV").value = localStorage.getItem("k_fishv") || "";
   }
 
-  // زرار ⚙ ظاهر في الهيدر لفتح/إغلاق لوحة المفاتيح
-  const langB = $("langBtn");
-  if (langB && !$("keyBtn")) {
-    const kb = document.createElement("button");
-    kb.id = "keyBtn";
-    kb.textContent = "⚙";
-    kb.setAttribute("style", "background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 9px;font-size:14px;font-family:Orbitron;cursor:pointer;margin-inline-end:5px;flex-shrink:0");
-    kb.onclick = function () {
-      if (!panel) return;
-      const open = panel.style.display === "none";
-      panel.style.display = open ? "block" : "none";
-      if (open) panel.scrollIntoView({ behavior: "smooth", block: "center" });
-    };
-    langB.parentNode.insertBefore(kb, langB.nextSibling);
+  const secretKeys = ["k_gpt", "k_groq", "k_gem", "k_fish", "k_ds", "k_kimi", "k_gh", "k_freekey"];
+  function valueFrom(id, key, legacy) {
+    const field = $(id);
+    return (field && field.value.trim()) || legacy || localStorage.getItem(key) || "";
   }
-  if (panel && !$("resetKeys")) {
-    const rb = document.createElement("button");
-    rb.id = "resetKeys";
-    rb.textContent = "RESET ALL KEYS";
-    rb.setAttribute("style", "background:#f87171;color:#000;border:none;border-radius:8px;width:100%;padding:10px;font-weight:bold;margin-top:8px;font-family:Orbitron;font-size:12px;cursor:pointer");
-    rb.onclick = function () {
-      ["k_gpt", "k_groq", "k_gem", "k_fish", "k_fishv"].forEach(function (k) { localStorage.removeItem(k); });
-      ["kGpt", "kGroq", "kGem", "kFish", "kFishV"].forEach(function (i) { const e = $(i); if (e) e.value = ""; });
-      if (typeof keys !== "undefined") { keys.gpt = ""; keys.groq = ""; }
-      pushKeys();
-      if (window.addLog) addLog("j", "All keys cleared.");
-    };
-    panel.appendChild(rb);
+  function clearWebSecrets() {
+    secretKeys.forEach(k => localStorage.removeItem(k));
+    ["kGpt", "kGroq", "kGem", "kFish", "kDs", "kKimi", "kGh"].forEach(id => {
+      const field = $(id); if (field) field.value = "";
+    });
+    if (typeof keys !== "undefined") {
+      ["gpt", "groq", "gem"].forEach(k => { if (k in keys) keys[k] = ""; });
+    }
+    localStorage.setItem("jarvis_keys_configured", "1");
   }
-  const clock = $("clock");
-  if (clock && panel) clock.onclick = function () {
-    panel.style.display = (panel.style.display === "none") ? "block" : "none";
-  };
 
-  // مفاتيح الصفحة (Groq / OpenAI / Gemini) بتتبعت للتطبيق
   function pushKeys() {
     try {
-      B.setKeys(JSON.stringify({
-        gpt: (typeof keys !== "undefined" && keys.gpt) || "",
-        groq: (typeof keys !== "undefined" && keys.groq) || "",
-        gem: localStorage.getItem("k_gem") || "",
-        fish: localStorage.getItem("k_fish") || "",
-        fishv: localStorage.getItem("k_fishv") || "",
-        ds: localStorage.getItem("k_ds") || "",
-        kimi: localStorage.getItem("k_kimi") || "",
-        gh: localStorage.getItem("k_gh") || "",
-        ghrepo: localStorage.getItem("k_ghrepo") || "",
+      const payload = {
+        gpt: valueFrom("kGpt", "k_gpt", typeof keys !== "undefined" ? keys.gpt : ""),
+        groq: valueFrom("kGroq", "k_groq", typeof keys !== "undefined" ? keys.groq : ""),
+        gem: valueFrom("kGem", "k_gem", typeof keys !== "undefined" ? keys.gem : ""),
+        fish: valueFrom("kFish", "k_fish", ""),
+        fishv: valueFrom("kFishV", "k_fishv", ""),
+        ds: valueFrom("kDs", "k_ds", ""),
+        kimi: valueFrom("kKimi", "k_kimi", ""),
+        gh: valueFrom("kGh", "k_gh", ""),
+        ghrepo: $("kGhRepo") ? $("kGhRepo").value.trim() : (localStorage.getItem("k_ghrepo") || ""),
+        freekey: localStorage.getItem("k_freekey") || "",
+        freeurl: localStorage.getItem("k_freeurl") || "",
         wake: localStorage.getItem("k_wake") === "1",
         perf: localStorage.getItem("k_perf") || "balanced",
         lock: localStorage.getItem("k_lock") === "1",
@@ -87,27 +64,83 @@
         localonly: localStorage.getItem("k_localonly") !== "0",
         sttdev: localStorage.getItem("k_sttdev") === "1",
         name: (typeof userName !== "undefined" && userName) || ""
-      }));
-    } catch (e) {}
+      };
+      const suppliedSecret = [payload.gpt, payload.groq, payload.gem, payload.fish, payload.ds, payload.kimi, payload.gh, payload.freekey].some(Boolean);
+      const saved = B.setKeys(JSON.stringify(payload));
+      if (!saved) {
+        if (window.addLog) addLog("err", "مقدرتش أحفظ المفاتيح بأمان. جرّب تاني؛ ما اتحفظتش كنص عادي.");
+        return false;
+      }
+      if (suppliedSecret) clearWebSecrets();
+      return true;
+    } catch (e) {
+      if (window.addLog) addLog("err", "تعذر حفظ الإعدادات بأمان.");
+      return false;
+    }
   }
+
   const origSave = window.saveKeys;
   window.saveKeys = function () {
-    const g = $("kGem"); if (g) localStorage.setItem("k_gem", g.value.trim());
-    const f = $("kFish"); if (f) localStorage.setItem("k_fish", f.value.trim());
-    const fv = $("kFishV"); if (fv) localStorage.setItem("k_fishv", fv.value.trim());
     if (origSave) origSave();
-    pushKeys();
+    if (pushKeys() && window.checkKeys) window.checkKeys();
   };
   pushKeys();
 
-  // أي مفتاح (Gemini / Groq / OpenAI) يخلي الحالة "Ready" ويقفل اللوحة
+  // Only a non-secret marker is kept in WebView storage; actual keys live in Android Keystore-backed preferences.
   window.checkKeys = function () {
-    const c = [localStorage.getItem("k_gem"), localStorage.getItem("k_gpt"), localStorage.getItem("k_groq")].filter(Boolean).length;
-    const p = $("setupPanel"); if (p) p.style.display = c ? "none" : "block";
-    if ($("vAi")) $("vAi").textContent = c ? c + " Models Ready" : "Missing";
-    if ($("rAi")) $("rAi").className = c ? "row on" : "row";
+    const hasConfigured = localStorage.getItem("jarvis_keys_configured") === "1" ||
+      (typeof keys !== "undefined" && Object.values(keys).some(Boolean)) || B.hasSavedKeys();
+    const p = $("setupPanel");
+    if (p) p.style.display = hasConfigured ? "none" : "block";
+    if ($("vAi")) $("vAi").textContent = hasConfigured ? "Saved securely" : "Missing";
+    if ($("rAi")) $("rAi").className = hasConfigured ? "row on" : "row";
   };
   window.checkKeys();
+
+  function openTaskHistory() {
+    let rows = [];
+    try { rows = JSON.parse(B.taskHistory() || "[]"); } catch (_) {}
+    let overlay = $("taskHistoryOverlay");
+    if (overlay) overlay.remove();
+    overlay = document.createElement("div");
+    overlay.id = "taskHistoryOverlay";
+    overlay.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:14px;direction:rtl");
+    const card = document.createElement("section");
+    card.setAttribute("style", "width:min(640px,100%);max-height:85vh;overflow:auto;background:#07172b;border:1px solid #00e5ff;border-radius:18px;padding:16px;color:#e8f7ff;box-shadow:0 0 28px #00e5ff55;font-family:inherit");
+    const heading = document.createElement("div");
+    heading.setAttribute("style", "display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px");
+    const title = document.createElement("strong"); title.textContent = "سجل المهام";
+    const close = document.createElement("button"); close.textContent = "إغلاق"; close.setAttribute("style", "min-height:36px;padding:4px 12px");
+    close.onclick = () => overlay.remove(); heading.append(title, close); card.appendChild(heading);
+    if (!rows.length) {
+      const empty = document.createElement("p"); empty.textContent = "لسه مفيش مهام محفوظة."; card.appendChild(empty);
+    } else {
+      rows.forEach(item => {
+        const entry = document.createElement("article");
+        entry.setAttribute("style", "border-top:1px solid #23435c;padding:10px 2px");
+        const status = document.createElement("div");
+        const label = item.status === "completed" ? "اكتملت" : item.status === "cancelled" ? "أُلغيت" : "تعذر إكمالها";
+        status.textContent = label + (item.ts ? " · " + new Date(item.ts).toLocaleString() : "");
+        status.setAttribute("style", "color:" + (item.status === "completed" ? "#71e8ad" : item.status === "cancelled" ? "#f7d774" : "#ff9c9c") + ";font-size:12px;margin-bottom:5px");
+        const request = document.createElement("div"); request.textContent = "طلبك: " + (item.request || "");
+        const result = document.createElement("div"); result.textContent = "النتيجة: " + (item.result || "");
+        result.setAttribute("style", "opacity:.82;margin-top:4px");
+        entry.append(status, request, result); card.appendChild(entry);
+      });
+    }
+    overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+    overlay.appendChild(card); document.body.appendChild(overlay);
+  }
+  window.openTaskHistory = openTaskHistory;
+  const langButton = $("langBtn");
+  if (langButton && !$("taskHistoryBtn")) {
+    const historyButton = document.createElement("button");
+    historyButton.id = "taskHistoryBtn"; historyButton.type = "button"; historyButton.textContent = "السجل";
+    historyButton.setAttribute("aria-label", "عرض سجل المهام");
+    historyButton.setAttribute("style", "background:transparent;border:1px solid var(--cy);color:var(--cy);border-radius:12px;padding:2px 9px;font-size:12px;font-family:inherit;cursor:pointer;margin-inline-end:5px;min-height:32px");
+    historyButton.onclick = openTaskHistory;
+    langButton.parentNode.insertBefore(historyButton, langButton);
+  }
 
   window.jarvisEvent = function (m) {
     if (m.type === "say" && window.addLog) addLog(m.c, m.t);
